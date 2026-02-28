@@ -385,4 +385,48 @@ let packet = encode_state_packet(&state);
 let packet = encode_event_packet(&Event::ClockStartStop, 0);
 ```
 
+# Python library
+
+`skewered_protocol` is a Python library for encoding and decoding the Skewered
+Fencing scoring box protocol. Mirrors the Rust crate's types and API.
+
+## Usage
+
+### Decoding
+
+```python
+from skewered_protocol import decode_packet, State, EventPacket
+
+message = decode_packet(buf)
+if isinstance(message, State):
+    print(f"weapon={message.weapon} score={message.left_score.score}-{message.right_score.score} clock={message.clock.remaining_ms}ms")
+elif isinstance(message, EventPacket):
+    print(f"event={message.event.kind}")
+```
+
+### Stream parsing (serial port)
+
+```python
+from skewered_protocol import Packetizer, State, EventPacket
+
+packetizer = Packetizer()
+for byte in serial_bytes:
+    message = packetizer.feed(byte)
+    if message is not None:
+        # message is a State or EventPacket
+        ...
+```
+
+### Encoding
+
+```python
+from skewered_protocol import *
+
+state = State(period=1, clock=Clock(remaining_ms=180_000))
+packet = encode_state_packet(state)
+
+event = Event.clock_start_stop()
+packet = encode_event_packet(event)
+```
+
 ---
