@@ -1,0 +1,14 @@
+[package]
+name = "skewered-protocol"
+version = "1.0.0"
+edition = "2024"
+description = "Encoder/decoder for the Skewered Fencing scoring box serial/Bluetooth protocol"
+license = "MIT"
+repository = "https://github.com/skewered/protocol"
+
+[features]
+default = []
+serial = []
+
+[dev-dependencies]
+hex-literal = "0.4"

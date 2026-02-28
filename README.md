@@ -315,3 +315,74 @@ identifying which strip a given bluetooth source is associated with.
 
 Each advertisement packet will include (in the manufacturer's payload) an
 up-to-date [State data packet](#state-updates).
+
+# Rust crate
+
+`skewered-protocol` is a rust crate for encoding and decoding the Skewered
+Fencing scoring box serial/Bluetooth protocol. `no_std` compatible, zero
+allocations.
+
+```toml
+[dependencies]
+skewered-protocol = { git = "https://github.com/skewered/protocol" }
+```
+
+## Usage
+
+### Decoding
+
+```rust
+use skewered_protocol::{decode_packet, Message};
+
+fn handle_packet(buf: &[u8]) {
+    match decode_packet(buf).expect("valid packet") {
+        Message::State(state) => {
+            println!("weapon={:?} score={}-{} clock={}ms",
+                state.weapon,
+                state.left_score.score,
+                state.right_score.score,
+                state.clock.remaining.as_millis());
+        }
+        Message::Event(ep) => {
+            println!("event={:?}", ep.event);
+        }
+    }
+}
+```
+
+### Stream parsing (serial port)
+
+Enable the `serial` feature for the `Packetizer` stream parser:
+
+```toml
+skewered-protocol = { git = "https://github.com/skewered/protocol", features = ["serial"] }
+```
+
+```rust
+use skewered_protocol::Packetizer;
+
+let mut packetizer = Packetizer::new();
+// Feed bytes as they arrive from the serial port:
+for byte in serial_bytes {
+    if let Some(result) = packetizer.feed(byte) {
+        let message = result.expect("valid packet")
+            .decode().expect("valid message");
+        // ...
+    }
+}
+```
+
+### Encoding
+
+```rust
+use skewered_protocol::*;
+
+// Encode a state into a 16-byte serial packet
+let state = State { period: 1, clock: Clock { remaining: Millis::from_secs(180), ..Clock::default() }, ..State::default() };
+let packet = encode_state_packet(&state);
+
+// Encode an event into a 6-byte serial packet
+let packet = encode_event_packet(&Event::ClockStartStop, 0);
+```
+
+---
