@@ -1,7 +1,7 @@
 """skewered_protocol -- encoder/decoder for the Skewered Fencing scoring box protocol."""
 
 from .types import (
-    DecodeError,
+    DecodeError, InvalidPacket,
     Weapon, Side, Priority, Card, MenuKey,
     FencerCards, FencerScore, FencerStripInput, StripInput,
     Clock, LatchedLight, State, Event, EventPacket,
@@ -37,7 +37,7 @@ def encode_event_packet(event: Event, dropped_count: int = 0) -> bytes:
 
 
 __all__ = [
-    "DecodeError",
+    "DecodeError", "InvalidPacket",
     "Weapon", "Side", "Priority", "Card", "MenuKey",
     "FencerCards", "FencerScore", "FencerStripInput", "StripInput",
     "Clock", "LatchedLight", "State", "Event", "EventPacket",

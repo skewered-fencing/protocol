@@ -1,6 +1,6 @@
 import pytest
 from skewered_protocol import (
-    Card, Clock, DecodeError, Event, EventPacket,
+    Card, Clock, DecodeError, Event, EventPacket, InvalidPacket,
     FencerCards, FencerScore, FencerStripInput, LatchedLight,
     MenuKey, Packetizer, Priority, Side, State, StripInput, Weapon,
     checksum, decode_event_data, decode_packet, decode_state_data,
@@ -426,22 +426,27 @@ class TestPacketizer:
         assert isinstance(results[0], State)
         assert results[0] == state
 
-    def test_corrupt_checksum_silently_dropped(self):
+    def test_corrupt_checksum_returns_invalid(self):
         state = State(clock=Clock(remaining_ms=180_000))
         packet = bytearray(encode_state_packet(state))
         packet[14] ^= 0x01  # corrupt checksum
 
         p = Packetizer()
+        saw_invalid = False
         for b in packet:
-            # Corrupt packet is silently dropped -- no result returned
-            assert p.feed(b) is None
+            result = p.feed(b)
+            if isinstance(result, InvalidPacket):
+                saw_invalid = True
+            elif isinstance(result, (State, EventPacket)):
+                pytest.fail("corrupt packet should not decode")
+        assert saw_invalid, "should report InvalidPacket for corrupt packet"
 
         # Packetizer recovers and decodes the next valid packet
         good_packet = encode_state_packet(state)
         results = p.feed_bytes(good_packet)
-        assert len(results) == 1
-        assert isinstance(results[0], State)
-        assert results[0] == state
+        states = [r for r in results if isinstance(r, State)]
+        assert len(states) == 1
+        assert states[0] == state
 
     def test_false_terminator_0xff_checksum(self):
         # Construct a state packet whose checksum is 0xFF.
@@ -461,18 +466,18 @@ class TestPacketizer:
         # The packetizer should handle the false terminator (checksum) and
         # still decode the packet when the real terminator arrives.
         p = Packetizer()
-        result = None
+        decoded = None
         for b in wrapped:
             r = p.feed(b)
-            if r is not None:
-                result = r
-        assert result is not None, "should decode packet with 0xFF checksum"
-        assert isinstance(result, State)
+            if isinstance(r, (State, EventPacket)):
+                decoded = r
+        assert decoded is not None, "should decode packet with 0xFF checksum"
+        assert isinstance(decoded, State)
 
-    def test_lone_terminator_ignored(self):
+    def test_lone_terminator_returns_invalid(self):
         p = Packetizer()
-        # A lone 0xFF can't form a valid packet -- silently ignored
-        assert p.feed(0xFF) is None
+        # A lone 0xFF can't form a valid packet
+        assert isinstance(p.feed(0xFF), InvalidPacket)
 
     def test_feed_bytes_api(self):
         state = State(clock=Clock(remaining_ms=180_000))

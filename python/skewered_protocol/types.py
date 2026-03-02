@@ -8,6 +8,25 @@ class DecodeError(ValueError):
     """Raised when a packet cannot be decoded."""
 
 
+class InvalidPacket:
+    """Sentinel returned by the Packetizer when a terminator was seen but did
+    not form a valid packet (corruption, or rarely a false terminator when the
+    checksum equals 0xFF)."""
+
+    _instance: InvalidPacket | None = None
+
+    def __new__(cls) -> InvalidPacket:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "InvalidPacket"
+
+    def __bool__(self) -> bool:
+        return True
+
+
 class Weapon(Enum):
     SABRE = "sabre"
     EPEE = "epee"

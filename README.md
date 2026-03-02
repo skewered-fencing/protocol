@@ -359,15 +359,22 @@ skewered-protocol = { git = "https://github.com/skewered/protocol", features = [
 ```
 
 ```rust
-use skewered_protocol::Packetizer;
+use skewered_protocol::{FeedResult, Packetizer};
 
 let mut packetizer = Packetizer::new();
-// Feed bytes as they arrive from the serial port:
-for byte in serial_bytes {
-    if let Some(result) = packetizer.feed(byte) {
-        let message = result.expect("valid packet")
-            .decode().expect("valid message");
-        // ...
+let mut data = &serial_bytes[..];
+loop {
+    let (result, rest) = packetizer.feed_bytes(data);
+    data = rest;
+    match result {
+        FeedResult::Packet(packet) => {
+            let message = packet.decode().expect("valid message");
+            // ...
+        }
+        FeedResult::Invalid => {
+            // Terminator seen but no valid packet — likely corruption.
+        }
+        FeedResult::Pending => break,
     }
 }
 ```
@@ -407,13 +414,16 @@ elif isinstance(message, EventPacket):
 ### Stream parsing (serial port)
 
 ```python
-from skewered_protocol import Packetizer, State, EventPacket
+from skewered_protocol import Packetizer, InvalidPacket, State, EventPacket
 
 packetizer = Packetizer()
 for byte in serial_bytes:
-    message = packetizer.feed(byte)
-    if message is not None:
-        # message is a State or EventPacket
+    result = packetizer.feed(byte)
+    if isinstance(result, (State, EventPacket)):
+        # Decoded message
+        ...
+    elif isinstance(result, InvalidPacket):
+        # Terminator seen but no valid packet — likely corruption.
         ...
 ```
 

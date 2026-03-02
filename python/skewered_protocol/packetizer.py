@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .types import DecodeError, EventPacket, State
+from .types import DecodeError, EventPacket, InvalidPacket, State
 from .envelope import (
     unwrap_packet, PACKET_TERMINATOR,
     STATE_PACKET_LEN, EVENT_PACKET_LEN,
@@ -29,11 +29,12 @@ class Packetizer:
         start = (self._write + STATE_PACKET_LEN - n) % STATE_PACKET_LEN
         return bytes(self._buf[(start + i) % STATE_PACKET_LEN] for i in range(n))
 
-    def feed(self, byte: int) -> State | EventPacket | None:
+    def feed(self, byte: int) -> State | EventPacket | InvalidPacket | None:
         """Feeds a single byte into the packetizer.
 
         Returns a decoded State or EventPacket when a valid packet is completed,
-        or None when more bytes are needed or data was invalid.
+        :class:`InvalidPacket` when a terminator was seen but did not form a
+        valid packet, or ``None`` when more bytes are needed.
 
         If a 0xFF byte is encountered but does not terminate a valid packet
         (e.g. a checksum that happens to be 0xFF), the buffer is preserved
@@ -68,10 +69,10 @@ class Packetizer:
 
         # Failed to decode -- could be a false terminator (e.g. 0xFF checksum).
         # Don't clear buffer; continue accumulating.
-        return None
+        return InvalidPacket()
 
-    def feed_bytes(self, data: bytes | bytearray) -> list[State | EventPacket]:
-        """Feeds a slice of bytes, returning a list of decoded messages."""
+    def feed_bytes(self, data: bytes | bytearray) -> list[State | EventPacket | InvalidPacket]:
+        """Feeds a slice of bytes, returning a list of decoded messages and invalid markers."""
         results = []
         for b in data:
             msg = self.feed(b)

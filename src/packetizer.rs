@@ -2,6 +2,18 @@ use crate::envelope::{
     EVENT_PACKET_LEN, PACKET_TERMINATOR, Packet, STATE_PACKET_LEN, unwrap_packet,
 };
 
+/// Result of feeding a byte into the [`Packetizer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedResult {
+    /// More bytes needed; no packet boundary reached.
+    Pending,
+    /// A valid packet was decoded.
+    Packet(Packet),
+    /// A terminator was seen but didn't form a valid packet (corruption,
+    /// or rarely a false terminator when the checksum equals `0xFF`).
+    Invalid,
+}
+
 /// Stream-based byte parser that reassembles serial bytes into validated
 /// packets.
 ///
@@ -28,13 +40,14 @@ impl Packetizer {
 
     /// Feeds a single byte into the packetizer.
     ///
-    /// Returns `Some(packet)` when a valid packet is completed,
-    /// or `None` when more bytes are needed.
+    /// Returns [`FeedResult::Packet`] when a valid packet is completed,
+    /// [`FeedResult::Invalid`] when a terminator was seen but did not form a
+    /// valid packet, or [`FeedResult::Pending`] when more bytes are needed.
     ///
     /// If a `0xFF` byte is encountered but does not terminate a valid packet
     /// (e.g. a checksum that happens to be `0xFF`), the buffer is preserved
     /// and parsing continues.
-    pub fn feed(&mut self, byte: u8) -> Option<Packet> {
+    pub fn feed(&mut self, byte: u8) -> FeedResult {
         self.buf[self.write] = byte;
         self.write = (self.write + 1) % STATE_PACKET_LEN;
         if self.len < STATE_PACKET_LEN {
@@ -42,7 +55,7 @@ impl Packetizer {
         }
 
         if byte != PACKET_TERMINATOR {
-            return None;
+            return FeedResult::Pending;
         }
 
         // Terminator seen -- try state packet (16 bytes), then event packet (6
@@ -52,7 +65,7 @@ impl Packetizer {
             self.linearize(&mut tmp, STATE_PACKET_LEN);
             if let Ok(pkt) = unwrap_packet(&tmp) {
                 self.reset();
-                return Some(pkt);
+                return FeedResult::Packet(pkt);
             }
         }
 
@@ -61,13 +74,13 @@ impl Packetizer {
             self.linearize(&mut tmp, EVENT_PACKET_LEN);
             if let Ok(pkt) = unwrap_packet(&tmp) {
                 self.reset();
-                return Some(pkt);
+                return FeedResult::Packet(pkt);
             }
         }
 
         // Failed to decode -- could be a false terminator (e.g. 0xFF checksum).
         // Don't clear buffer; continue accumulating.
-        None
+        FeedResult::Invalid
     }
 
     /// Copies the last `n` bytes from the circular buffer into `out`.
@@ -78,12 +91,12 @@ impl Packetizer {
         }
     }
 
-    /// Feeds a slice of bytes, processing until a packet is found or all bytes
-    /// are consumed.
+    /// Feeds a slice of bytes, processing until a packet or invalid terminator
+    /// is found, or all bytes are consumed.
     ///
     /// Returns `(result, remaining)` where `remaining` is the unconsumed tail
-    /// of the input. If a packet was completed, `result` is `Some(packet)`. If
-    /// all bytes were consumed without completing a packet, `result` is `None`.
+    /// of the input. The result is [`FeedResult::Pending`] only when all bytes
+    /// are consumed without reaching a packet boundary.
     ///
     /// Call repeatedly with the returned remaining slice to extract multiple
     /// packets:
@@ -93,18 +106,20 @@ impl Packetizer {
     ///     let (result, rest) = packetizer.feed_bytes(data);
     ///     data = rest;
     ///     match result {
-    ///         Some(packet) => handle(packet),
-    ///         None => break,
+    ///         FeedResult::Packet(packet) => handle(packet),
+    ///         FeedResult::Invalid => count_corruption(),
+    ///         FeedResult::Pending => break,
     ///     }
     /// }
     /// ```
-    pub fn feed_bytes<'a>(&mut self, bytes: &'a [u8]) -> (Option<Packet>, &'a [u8]) {
+    pub fn feed_bytes<'a>(&mut self, bytes: &'a [u8]) -> (FeedResult, &'a [u8]) {
         for (i, &b) in bytes.iter().enumerate() {
-            if let Some(pkt) = self.feed(b) {
-                return (Some(pkt), &bytes[i + 1..]);
+            match self.feed(b) {
+                FeedResult::Pending => {}
+                result => return (result, &bytes[i + 1..]),
             }
         }
-        (None, &[])
+        (FeedResult::Pending, &[])
     }
 
     /// Resets the packetizer, discarding any buffered data.
@@ -126,10 +141,14 @@ mod tests {
 
         let mut p = Packetizer::new();
         for &b in &packet[..packet.len() - 1] {
-            assert!(p.feed(b).is_none());
+            assert_eq!(p.feed(b), FeedResult::Pending);
         }
-        let pkt = p.feed(packet[packet.len() - 1]).unwrap();
-        assert_eq!(pkt.data, PacketData::State(data));
+        assert_eq!(
+            p.feed(packet[packet.len() - 1]),
+            FeedResult::Packet(Packet {
+                data: PacketData::State(data),
+            }),
+        );
     }
 
     #[test]
@@ -139,10 +158,14 @@ mod tests {
 
         let mut p = Packetizer::new();
         for &b in &packet[..packet.len() - 1] {
-            assert!(p.feed(b).is_none());
+            assert_eq!(p.feed(b), FeedResult::Pending);
         }
-        let pkt = p.feed(packet[packet.len() - 1]).unwrap();
-        assert_eq!(pkt.data, PacketData::Event(data));
+        assert_eq!(
+            p.feed(packet[packet.len() - 1]),
+            FeedResult::Packet(Packet {
+                data: PacketData::Event(data),
+            }),
+        );
     }
 
     #[test]
@@ -158,11 +181,21 @@ mod tests {
 
         let mut p = Packetizer::new();
         let (result, rest) = p.feed_bytes(&stream);
-        assert_eq!(result.unwrap().data, PacketData::State(state_data));
+        assert_eq!(
+            result,
+            FeedResult::Packet(Packet {
+                data: PacketData::State(state_data),
+            }),
+        );
         assert_eq!(rest.len(), 6);
 
         let (result, rest) = p.feed_bytes(rest);
-        assert_eq!(result.unwrap().data, PacketData::Event(event_data));
+        assert_eq!(
+            result,
+            FeedResult::Packet(Packet {
+                data: PacketData::Event(event_data),
+            }),
+        );
         assert!(rest.is_empty());
     }
 
@@ -179,26 +212,36 @@ mod tests {
 
         let mut p = Packetizer::new();
         let (result, rest) = p.feed_bytes(&stream);
-        assert!(result.is_some());
+        assert!(matches!(result, FeedResult::Packet(_)));
         assert!(rest.is_empty());
     }
 
     #[test]
-    fn corrupt_checksum_silently_dropped() {
+    fn corrupt_checksum_returns_invalid() {
         let data = [0u8; 13];
         let mut packet = wrap_state_packet(&data);
         packet[14] ^= 0x01; // corrupt checksum
 
         let mut p = Packetizer::new();
+        let mut saw_invalid = false;
         for &b in &packet {
-            // Corrupt packet is silently dropped -- no result returned
-            assert!(p.feed(b).is_none());
+            match p.feed(b) {
+                FeedResult::Invalid => saw_invalid = true,
+                FeedResult::Packet(_) => panic!("corrupt packet should not decode"),
+                FeedResult::Pending => {}
+            }
         }
+        assert!(saw_invalid, "should report Invalid for corrupt packet");
 
         // Packetizer recovers and decodes the next valid packet
         let good_packet = wrap_state_packet(&data);
         let (result, _) = p.feed_bytes(&good_packet);
-        assert_eq!(result.unwrap().data, PacketData::State(data));
+        assert_eq!(
+            result,
+            FeedResult::Packet(Packet {
+                data: PacketData::State(data),
+            }),
+        );
     }
 
     #[test]
@@ -217,13 +260,14 @@ mod tests {
         // The packetizer should handle the false terminator (checksum) and
         // still decode the packet when the real terminator arrives.
         let mut p = Packetizer::new();
-        let mut result = None;
+        let mut decoded = None;
         for &b in &packet {
-            if let Some(pkt) = p.feed(b) {
-                result = Some(pkt);
+            match p.feed(b) {
+                FeedResult::Packet(pkt) => decoded = Some(pkt),
+                FeedResult::Invalid | FeedResult::Pending => {}
             }
         }
-        let pkt = result.expect("should decode packet with 0xFF checksum");
+        let pkt = decoded.expect("should decode packet with 0xFF checksum");
         assert_eq!(pkt.data, PacketData::State(data));
     }
 
@@ -240,20 +284,20 @@ mod tests {
 
         let mut p = Packetizer::new();
         let (result, rest) = p.feed_bytes(&stream);
-        assert!(result.is_some());
+        assert!(matches!(result, FeedResult::Packet(_)));
 
         let (result, rest) = p.feed_bytes(rest);
-        assert!(result.is_some());
+        assert!(matches!(result, FeedResult::Packet(_)));
 
         let (result, _) = p.feed_bytes(rest);
-        assert!(result.is_none());
+        assert_eq!(result, FeedResult::Pending);
     }
 
     #[test]
-    fn lone_terminator_ignored() {
+    fn lone_terminator_returns_invalid() {
         let mut p = Packetizer::new();
-        // A lone 0xFF can't form a valid packet -- silently ignored
-        assert!(p.feed(0xFF).is_none());
+        // A lone 0xFF can't form a valid packet
+        assert_eq!(p.feed(0xFF), FeedResult::Invalid);
     }
 
     #[test]
@@ -266,12 +310,12 @@ mod tests {
         // After reset, feeding a complete packet should work
         let data = [0x22, 0x00, 0x00];
         let packet = wrap_event_packet(&data);
-        let mut result = None;
+        let mut decoded = None;
         for &b in &packet {
-            if let Some(pkt) = p.feed(b) {
-                result = Some(pkt);
+            if let FeedResult::Packet(pkt) = p.feed(b) {
+                decoded = Some(pkt);
             }
         }
-        assert_eq!(result.unwrap().data, PacketData::Event(data));
+        assert_eq!(decoded.unwrap().data, PacketData::Event(data),);
     }
 }
