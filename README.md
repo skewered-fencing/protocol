@@ -1,7 +1,7 @@
 # Protocol Specification
 
 This document describes the serial/bluetooth protocol for the Skewered Fencing
-scoring boxes as of build 324. Please note that this is the initial release of
+scoring boxes as of build 414. Please note that this is the initial release of
 the protocol and changes may occur in future releases. Despite that, efforts
 will be made to keep the protocols backwards compatible when possible.
 
@@ -127,7 +127,7 @@ State update packets consist of 13 data bytes:
   E.g.:  | 0H LLL RRR |
   ```
 
-  The `hide_extra_bits` flag is set when the scoring box is configured NOT to
+  The `hide_extra_hits` flag is set when the scoring box is configured NOT to
   show additional hit timing and allows repeater displays to respect that
   setting.
 
