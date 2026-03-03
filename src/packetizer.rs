@@ -1,5 +1,6 @@
 use crate::envelope::{
-    EVENT_PACKET_LEN, PACKET_TERMINATOR, Packet, STATE_PACKET_LEN, unwrap_packet,
+    EVENT_PACKET_LEN, EVENT_PACKET_TYPE, PACKET_TERMINATOR, Packet, STATE_PACKET_LEN,
+    STATE_PACKET_TYPE, unwrap_packet,
 };
 
 /// Result of feeding a byte into the [`Packetizer`].
@@ -11,7 +12,22 @@ pub enum FeedResult {
     Packet(Packet),
     /// A terminator was seen but didn't form a valid packet (corruption,
     /// or rarely a false terminator when the checksum equals `0xFF`).
-    Invalid,
+    /// Contains the buffer contents and valid length for debugging.
+    Invalid(InvalidPacket),
+}
+
+/// Buffer contents when an invalid packet is detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidPacket {
+    bytes: [u8; STATE_PACKET_LEN],
+    len: usize,
+}
+
+impl InvalidPacket {
+    /// Returns the invalid packet bytes as a slice.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
 }
 
 /// Stream-based byte parser that reassembles serial bytes into validated
@@ -58,29 +74,59 @@ impl Packetizer {
             return FeedResult::Pending;
         }
 
-        // Terminator seen -- try state packet (16 bytes), then event packet (6
-        // bytes)
-        if self.len >= STATE_PACKET_LEN {
-            let mut tmp = [0u8; STATE_PACKET_LEN];
+        // Terminator seen. Use a single linearization buffer. We linearize at
+        // most once, checking packet type markers to determine what to try.
+        let mut tmp = [0u8; STATE_PACKET_LEN];
+        let mut linearized_len = 0usize;
+
+        // Check for STATE packet (16 bytes, type 0xEE)
+        if self.has_marker_from_end(STATE_PACKET_LEN, STATE_PACKET_TYPE) {
             self.linearize(&mut tmp, STATE_PACKET_LEN);
+            linearized_len = STATE_PACKET_LEN;
             if let Ok(pkt) = unwrap_packet(&tmp) {
                 self.reset();
                 return FeedResult::Packet(pkt);
             }
+            // STATE marker present but invalid - continue to check EVENT
         }
 
-        if self.len >= EVENT_PACKET_LEN {
-            let mut tmp = [0u8; EVENT_PACKET_LEN];
-            self.linearize(&mut tmp, EVENT_PACKET_LEN);
-            if let Ok(pkt) = unwrap_packet(&tmp) {
+        // Check for EVENT packet (6 bytes, type 0xED)
+        if self.has_marker_from_end(EVENT_PACKET_LEN, EVENT_PACKET_TYPE) {
+            self.linearize(&mut tmp[..EVENT_PACKET_LEN], EVENT_PACKET_LEN);
+            linearized_len = EVENT_PACKET_LEN;
+            if let Ok(pkt) = unwrap_packet(&tmp[..EVENT_PACKET_LEN]) {
                 self.reset();
                 return FeedResult::Packet(pkt);
             }
+            // EVENT marker present but invalid - fall through to return Invalid
         }
 
-        // Failed to decode -- could be a false terminator (e.g. 0xFF checksum).
-        // Don't clear buffer; continue accumulating.
-        FeedResult::Invalid
+        // Neither STATE nor EVENT succeeded. Return Invalid with whatever we
+        // linearized. If nothing was linearized (no markers found), linearize
+        // the entire buffer.
+        if linearized_len == 0 {
+            linearized_len = self.len;
+            self.linearize(&mut tmp, self.len);
+        }
+
+        FeedResult::Invalid(InvalidPacket {
+            bytes: tmp,
+            len: linearized_len,
+        })
+    }
+
+    /// Returns true if the buffer has `marker` in the buffer at `n` bytes from
+    /// the end of the buffer. If the buffer is less than `n` in length or the
+    /// target byte doesn't match, this will return false.
+    ///
+    /// Used to check for packet type markers (STATE=0xEE, EVENT=0xED) before
+    /// linearizing, avoiding unnecessary work when the marker isn't present.
+    fn has_marker_from_end(&self, n: usize, marker: u8) -> bool {
+        if self.len < n {
+            return false;
+        }
+        let idx = (self.write + STATE_PACKET_LEN - n) % STATE_PACKET_LEN;
+        self.buf[idx] == marker
     }
 
     /// Copies the last `n` bytes from the circular buffer into `out`.
@@ -107,7 +153,7 @@ impl Packetizer {
     ///     data = rest;
     ///     match result {
     ///         FeedResult::Packet(packet) => handle(packet),
-    ///         FeedResult::Invalid => count_corruption(),
+    ///         FeedResult::Invalid(inv) => log_corruption(inv.as_bytes()),
     ///         FeedResult::Pending => break,
     ///     }
     /// }
@@ -226,7 +272,7 @@ mod tests {
         let mut saw_invalid = false;
         for &b in &packet {
             match p.feed(b) {
-                FeedResult::Invalid => saw_invalid = true,
+                FeedResult::Invalid(_) => saw_invalid = true,
                 FeedResult::Packet(_) => panic!("corrupt packet should not decode"),
                 FeedResult::Pending => {}
             }
@@ -264,7 +310,7 @@ mod tests {
         for &b in &packet {
             match p.feed(b) {
                 FeedResult::Packet(pkt) => decoded = Some(pkt),
-                FeedResult::Invalid | FeedResult::Pending => {}
+                FeedResult::Invalid(_) | FeedResult::Pending => {}
             }
         }
         let pkt = decoded.expect("should decode packet with 0xFF checksum");
@@ -296,8 +342,10 @@ mod tests {
     #[test]
     fn lone_terminator_returns_invalid() {
         let mut p = Packetizer::new();
-        // A lone 0xFF can't form a valid packet
-        assert_eq!(p.feed(0xFF), FeedResult::Invalid);
+        // A lone 0xFF without a packet type marker returns Invalid with the
+        // single byte that was in the buffer.
+        let result = p.feed(0xFF);
+        assert!(matches!(result, FeedResult::Invalid(inv) if inv.as_bytes() == &[0xFF]));
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub use state::{State, decode_state_data, encode_state_data};
 pub use types::*;
 
 #[cfg(feature = "serial")]
-pub use packetizer::{FeedResult, Packetizer};
+pub use packetizer::{FeedResult, InvalidPacket, Packetizer};
 
 /// A fully decoded message: either a state update or an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
