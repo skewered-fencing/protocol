@@ -101,14 +101,14 @@ impl Packetizer {
             // EVENT marker present but invalid - fall through to return Invalid
         }
 
-        // Neither STATE nor EVENT succeeded. Return Invalid with whatever we
-        // linearized. If nothing was linearized (no markers found), linearize
-        // the entire buffer.
+        // If no marker was found, this is a spurious 0xFF in the data stream
+        // (e.g., event payloads like "ed 24 ff 00 10 ff" contain 0xFF bytes).
+        // Return Pending to continue accumulating.
         if linearized_len == 0 {
-            linearized_len = self.len;
-            self.linearize(&mut tmp, self.len);
+            return FeedResult::Pending;
         }
 
+        // A marker was found but the packet was invalid (bad checksum, etc.)
         FeedResult::Invalid(InvalidPacket {
             bytes: tmp,
             len: linearized_len,
@@ -340,12 +340,55 @@ mod tests {
     }
 
     #[test]
-    fn lone_terminator_returns_invalid() {
+    fn spurious_terminator_returns_pending() {
         let mut p = Packetizer::new();
-        // A lone 0xFF without a packet type marker returns Invalid with the
-        // single byte that was in the buffer.
-        let result = p.feed(0xFF);
-        assert!(matches!(result, FeedResult::Invalid(inv) if inv.as_bytes() == &[0xFF]));
+        // A 0xFF without a packet type marker is likely data (e.g., event
+        // payloads contain 0xFF bytes). Return Pending to continue accumulating.
+        assert_eq!(p.feed(0xFF), FeedResult::Pending);
+    }
+
+    #[test]
+    fn event_with_0xff_in_payload_left_score_up() {
+        // Left score up event: ed 11 01 00 ff ff
+        // The 5th byte (0xff) is data, not a terminator.
+        let packet = [0xed, 0x11, 0x01, 0x00, 0xff, 0xff];
+        let mut p = Packetizer::new();
+
+        for (i, &b) in packet.iter().enumerate() {
+            let result = p.feed(b);
+            if i < packet.len() - 1 {
+                // All bytes except the last should return Pending (no Invalid!)
+                assert_eq!(result, FeedResult::Pending, "byte {i} (0x{b:02x}) should be Pending");
+            } else {
+                // Last byte should produce a valid packet
+                assert!(
+                    matches!(result, FeedResult::Packet(_)),
+                    "final byte should produce Packet, got {result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn event_with_0xff_in_payload_adj_clock_minus_1() {
+        // Adjust clock by -1 event: ed 24 ff 00 10 ff
+        // The 3rd byte (0xff) is data, not a terminator.
+        let packet = [0xed, 0x24, 0xff, 0x00, 0x10, 0xff];
+        let mut p = Packetizer::new();
+
+        for (i, &b) in packet.iter().enumerate() {
+            let result = p.feed(b);
+            if i < packet.len() - 1 {
+                // All bytes except the last should return Pending (no Invalid!)
+                assert_eq!(result, FeedResult::Pending, "byte {i} (0x{b:02x}) should be Pending");
+            } else {
+                // Last byte should produce a valid packet
+                assert!(
+                    matches!(result, FeedResult::Packet(_)),
+                    "final byte should produce Packet, got {result:?}"
+                );
+            }
+        }
     }
 
     #[test]
