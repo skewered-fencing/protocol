@@ -371,10 +371,11 @@ loop {
             let message = packet.decode().expect("valid message");
             // ...
         }
-        FeedResult::Invalid => {
-            // Terminator seen but no valid packet — likely corruption.
+        FeedResult::BadChecksum => {
+            // Marker found but checksum failed — corruption on the wire.
+            // Optionally inspect packetizer.buffer() for diagnostics.
         }
-        FeedResult::Pending => break,
+        FeedResult::NoMarker | FeedResult::Pending => break,
     }
 }
 ```
@@ -414,17 +415,22 @@ elif isinstance(message, EventPacket):
 ### Stream parsing (serial port)
 
 ```python
-from skewered_protocol import Packetizer, InvalidPacket, State, EventPacket
+from skewered_protocol import Packetizer, BadChecksum, NoMarker, State, EventPacket
 
 packetizer = Packetizer()
-for byte in serial_bytes:
-    result = packetizer.feed(byte)
+data = serial_bytes
+while data:
+    result, data = packetizer.feed_bytes(data)
     if isinstance(result, (State, EventPacket)):
         # Decoded message
         ...
-    elif isinstance(result, InvalidPacket):
-        # Terminator seen but no valid packet — likely corruption.
+    elif isinstance(result, BadChecksum):
+        # Marker found but checksum failed — corruption on the wire.
+        # Optionally inspect packetizer.buffer() for diagnostics.
         ...
+    else:
+        # NoMarker or None — no packet found, wait for more data.
+        break
 ```
 
 ### Encoding

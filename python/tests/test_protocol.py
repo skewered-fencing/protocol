@@ -1,6 +1,6 @@
 import pytest
 from skewered_protocol import (
-    Card, Clock, DecodeError, Event, EventPacket, InvalidPacket,
+    Card, Clock, DecodeError, Event, EventPacket, BadChecksum, NoMarker,
     FencerCards, FencerScore, FencerStripInput, LatchedLight,
     MenuKey, Packetizer, Priority, Side, State, StripInput, Weapon,
     checksum, decode_event_data, decode_packet, decode_state_data,
@@ -408,12 +408,15 @@ class TestPacketizer:
         stream = encode_state_packet(state) + encode_event_packet(event)
 
         p = Packetizer()
-        results = p.feed_bytes(stream)
-        assert len(results) == 2
-        assert isinstance(results[0], State)
-        assert results[0] == state
-        assert isinstance(results[1], EventPacket)
-        assert results[1].event == event
+        result, rest = p.feed_bytes(stream)
+        assert isinstance(result, State)
+        assert result == state
+        assert len(rest) == EVENT_PACKET_LEN
+
+        result, rest = p.feed_bytes(rest)
+        assert isinstance(result, EventPacket)
+        assert result.event == event
+        assert len(rest) == 0
 
     def test_garbage_before_packet_resync(self):
         state = State(clock=Clock(remaining_ms=180_000))
@@ -421,36 +424,58 @@ class TestPacketizer:
         stream = bytes([0xAA, 0xBB, 0xCC]) + packet
 
         p = Packetizer()
-        results = p.feed_bytes(stream)
-        assert len(results) == 1
-        assert isinstance(results[0], State)
-        assert results[0] == state
+        result, rest = p.feed_bytes(stream)
+        assert isinstance(result, State)
+        assert result == state
+        assert len(rest) == 0
 
-    def test_corrupt_checksum_returns_invalid(self):
+    def test_corrupt_checksum_returns_bad_checksum(self):
         state = State(clock=Clock(remaining_ms=180_000))
         packet = bytearray(encode_state_packet(state))
         packet[14] ^= 0x01  # corrupt checksum
 
         p = Packetizer()
-        saw_invalid = False
+        saw_bad_checksum = False
         for b in packet:
             result = p.feed(b)
-            if isinstance(result, InvalidPacket):
-                saw_invalid = True
+            if isinstance(result, BadChecksum):
+                saw_bad_checksum = True
             elif isinstance(result, (State, EventPacket)):
                 pytest.fail("corrupt packet should not decode")
-        assert saw_invalid, "should report InvalidPacket for corrupt packet"
+        assert saw_bad_checksum, "should report BadChecksum for corrupt packet"
 
         # Packetizer recovers and decodes the next valid packet
         good_packet = encode_state_packet(state)
-        results = p.feed_bytes(good_packet)
-        states = [r for r in results if isinstance(r, State)]
-        assert len(states) == 1
-        assert states[0] == state
+        result, rest = p.feed_bytes(good_packet)
+        assert isinstance(result, State)
+        assert result == state
 
-    def test_false_terminator_0xff_checksum(self):
+    def test_corrupt_checksum_via_feed_bytes(self):
+        state = State(clock=Clock(remaining_ms=180_000))
+        packet = bytearray(encode_state_packet(state))
+        packet[14] ^= 0x01  # corrupt checksum
+
+        p = Packetizer()
+        result, rest = p.feed_bytes(bytes(packet))
+        assert isinstance(result, BadChecksum)
+        assert len(rest) == 0
+
+    def test_bad_checksum_buffer_inspection(self):
+        state = State(clock=Clock(remaining_ms=180_000))
+        packet = bytearray(encode_state_packet(state))
+        packet[14] ^= 0x01  # corrupt checksum
+
+        p = Packetizer()
+        result, _ = p.feed_bytes(bytes(packet))
+        assert isinstance(result, BadChecksum)
+
+        buf = p.buffer()
+        assert len(buf) == STATE_PACKET_LEN
+        assert buf[0] == 0xEE  # type byte
+        assert buf[15] == 0xFF  # terminator
+
+    def test_false_terminator_0xff_checksum_feed(self):
         # Construct a state packet whose checksum is 0xFF.
-        # We need checksum(TYPE || DATA) == 0xFF.
         # checksum([0xEE, d0..d12]) = 0xEE + sum(d0..d12) (wrapping)
         # We need 0xEE + sum(data) == 0xFF, so sum(data) == 0x11
         # Data must also be valid state (period >= 1), so we use:
@@ -463,38 +488,90 @@ class TestPacketizer:
         assert wrapped[14] == 0xFF, "checksum should be 0xFF"
 
         # The packet has two consecutive 0xFF bytes: checksum and terminator.
-        # The packetizer should handle the false terminator (checksum) and
-        # still decode the packet when the real terminator arrives.
+        # feed() returns NoMarker at the false terminator, then the decoded
+        # State at the real one.
         p = Packetizer()
         decoded = None
+        saw_no_marker = False
         for b in wrapped:
             r = p.feed(b)
-            if isinstance(r, (State, EventPacket)):
+            if isinstance(r, NoMarker):
+                saw_no_marker = True
+            elif isinstance(r, (State, EventPacket)):
                 decoded = r
+        assert saw_no_marker, "should see NoMarker at false terminator"
         assert decoded is not None, "should decode packet with 0xFF checksum"
         assert isinstance(decoded, State)
 
-    def test_lone_terminator_returns_invalid(self):
+    def test_false_terminator_0xff_checksum_feed_bytes(self):
+        # Same 0xFF-checksum packet, but via feed_bytes(). The NoMarker at
+        # the false terminator is suppressed; only Packet is returned.
+        data = bytearray(STATE_DATA_LEN)
+        data[1] = 0x01
+        data[3] = 0x10
+        wrapped = wrap_state_packet(bytes(data))
+        assert wrapped[14] == 0xFF, "checksum should be 0xFF"
+
         p = Packetizer()
-        # A lone 0xFF can't form a valid packet
-        assert isinstance(p.feed(0xFF), InvalidPacket)
+        result, rest = p.feed_bytes(wrapped)
+        assert isinstance(result, State)
+        assert len(rest) == 0
+
+    def test_lone_terminator_returns_no_marker_via_feed(self):
+        p = Packetizer()
+        assert isinstance(p.feed(0xFF), NoMarker)
+
+    def test_lone_terminator_returns_no_marker_via_feed_bytes(self):
+        p = Packetizer()
+        result, rest = p.feed_bytes(bytes([0xFF]))
+        assert isinstance(result, NoMarker)
+        assert len(rest) == 0
+
+    def test_garbage_with_terminators_returns_no_marker_via_feed_bytes(self):
+        p = Packetizer()
+        garbage = bytes([0xAA, 0xBB, 0xFF, 0xCC, 0xDD, 0xFF])
+        result, rest = p.feed_bytes(garbage)
+        assert isinstance(result, NoMarker)
+        assert len(rest) == 0
+
+    def test_garbage_without_terminators_returns_none(self):
+        p = Packetizer()
+        garbage = bytes([0xAA, 0xBB, 0xCC, 0xDD])
+        result, rest = p.feed_bytes(garbage)
+        assert result is None
+        assert len(rest) == 0
 
     def test_feed_bytes_api(self):
         state = State(clock=Clock(remaining_ms=180_000))
         event = Event.clock_start_stop()
         stream = encode_state_packet(state) + encode_event_packet(event)
         p = Packetizer()
-        results = p.feed_bytes(stream)
-        assert len(results) == 2
+
+        result, rest = p.feed_bytes(stream)
+        assert isinstance(result, State)
+
+        result, rest = p.feed_bytes(rest)
+        assert isinstance(result, EventPacket)
+
+        result, rest = p.feed_bytes(rest)
+        assert result is None
+
+    def test_buffer_inspection(self):
+        p = Packetizer()
+        p.feed(0xAA)
+        p.feed(0xBB)
+        p.feed(0xCC)
+        assert p.buffer() == bytes([0xAA, 0xBB, 0xCC])
 
     def test_reset_clears_buffer(self):
         p = Packetizer()
         p.feed(0xEE)
         p.feed(0x00)
         p.reset()
+        assert p.buffered_len == 0
+        assert p.buffer() == b""
 
         event = Event.clock_start_stop()
         packet = encode_event_packet(event)
-        results = p.feed_bytes(packet)
-        assert len(results) == 1
-        assert isinstance(results[0], EventPacket)
+        result, rest = p.feed_bytes(packet)
+        assert isinstance(result, EventPacket)

@@ -6,28 +6,19 @@ use crate::envelope::{
 /// Result of feeding a byte into the [`Packetizer`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedResult {
-    /// More bytes needed; no packet boundary reached.
+    /// More bytes needed; no packet boundary reached yet.
     Pending,
     /// A valid packet was decoded.
     Packet(Packet),
-    /// A terminator was seen but didn't form a valid packet (corruption,
-    /// or rarely a false terminator when the checksum equals `0xFF`).
-    /// Contains the buffer contents and valid length for debugging.
-    Invalid(InvalidPacket),
-}
-
-/// Buffer contents when an invalid packet is detected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidPacket {
-    bytes: [u8; STATE_PACKET_LEN],
-    len: usize,
-}
-
-impl InvalidPacket {
-    /// Returns the invalid packet bytes as a slice.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
+    /// A `0xFF` terminator was seen and a packet type marker was found at the
+    /// expected position, but the checksum did not match. This indicates
+    /// corruption on the wire.
+    BadChecksum,
+    /// A `0xFF` terminator was seen but no packet type marker (`0xEE` or
+    /// `0xED`) was found at the expected position. This is typically a
+    /// spurious `0xFF` byte in the data stream (e.g. event payloads or a
+    /// checksum that happens to be `0xFF`).
+    NoMarker,
 }
 
 /// Stream-based byte parser that reassembles serial bytes into validated
@@ -56,13 +47,17 @@ impl Packetizer {
 
     /// Feeds a single byte into the packetizer.
     ///
-    /// Returns [`FeedResult::Packet`] when a valid packet is completed,
-    /// [`FeedResult::Invalid`] when a terminator was seen but did not form a
-    /// valid packet, or [`FeedResult::Pending`] when more bytes are needed.
-    ///
-    /// If a `0xFF` byte is encountered but does not terminate a valid packet
-    /// (e.g. a checksum that happens to be `0xFF`), the buffer is preserved
-    /// and parsing continues.
+    /// Returns:
+    /// - [`FeedResult::Packet`] — a valid packet was decoded and the buffer
+    ///   was reset.
+    /// - [`FeedResult::BadChecksum`] — a terminator was seen with a matching
+    ///   packet type marker, but the checksum failed. This signals corruption.
+    ///   The buffer is preserved (call [`buffer()`](Packetizer::buffer) to
+    ///   inspect it).
+    /// - [`FeedResult::NoMarker`] — a `0xFF` terminator was seen but no packet
+    ///   type marker was found at the expected position. Most likely a spurious
+    ///   `0xFF` in the data stream. The buffer is preserved.
+    /// - [`FeedResult::Pending`] — a non-terminator byte was buffered.
     pub fn feed(&mut self, byte: u8) -> FeedResult {
         self.buf[self.write] = byte;
         self.write = (self.write + 1) % STATE_PACKET_LEN;
@@ -74,53 +69,47 @@ impl Packetizer {
             return FeedResult::Pending;
         }
 
-        // Terminator seen. Use a single linearization buffer. We linearize at
-        // most once, checking packet type markers to determine what to try.
-        let mut tmp = [0u8; STATE_PACKET_LEN];
-        let mut linearized_len = 0usize;
+        // Terminator seen. Check for a packet type marker at the expected
+        // position and attempt to decode if found.
 
-        // Check for STATE packet (16 bytes, type 0xEE)
+        let mut marker_found = false;
+
+        // STATE packet (16 bytes, type 0xEE)
         if self.has_marker_from_end(STATE_PACKET_LEN, STATE_PACKET_TYPE) {
-            self.linearize(&mut tmp, STATE_PACKET_LEN);
-            linearized_len = STATE_PACKET_LEN;
-            if let Ok(pkt) = unwrap_packet(&tmp) {
+            marker_found = true;
+            self.linearize(STATE_PACKET_LEN);
+            if let Ok(pkt) = unwrap_packet(&self.buf[..STATE_PACKET_LEN]) {
                 self.reset();
                 return FeedResult::Packet(pkt);
             }
-            // STATE marker present but invalid - continue to check EVENT
         }
 
-        // Check for EVENT packet (6 bytes, type 0xED)
+        // EVENT packet (6 bytes, type 0xED)
         if self.has_marker_from_end(EVENT_PACKET_LEN, EVENT_PACKET_TYPE) {
-            self.linearize(&mut tmp[..EVENT_PACKET_LEN], EVENT_PACKET_LEN);
-            linearized_len = EVENT_PACKET_LEN;
-            if let Ok(pkt) = unwrap_packet(&tmp[..EVENT_PACKET_LEN]) {
+            marker_found = true;
+            self.linearize(EVENT_PACKET_LEN);
+            if let Ok(pkt) = unwrap_packet(&self.buf[..EVENT_PACKET_LEN]) {
                 self.reset();
                 return FeedResult::Packet(pkt);
             }
-            // EVENT marker present but invalid - fall through to return Invalid
         }
 
-        // If no marker was found, this is a spurious 0xFF in the data stream
-        // (e.g., event payloads like "ed 24 ff 00 10 ff" contain 0xFF bytes).
-        // Return Pending to continue accumulating.
-        if linearized_len == 0 {
-            return FeedResult::Pending;
+        if !marker_found {
+            FeedResult::NoMarker
+        } else {
+            // If we found a terminator and a matching marker but didn't return
+            // a packet, the only other possibility is a bad checksum.
+            //
+            // This could change in the future if there are packet failure
+            // conditions.
+            FeedResult::BadChecksum
         }
-
-        // A marker was found but the packet was invalid (bad checksum, etc.)
-        FeedResult::Invalid(InvalidPacket {
-            bytes: tmp,
-            len: linearized_len,
-        })
     }
 
-    /// Returns true if the buffer has `marker` in the buffer at `n` bytes from
-    /// the end of the buffer. If the buffer is less than `n` in length or the
-    /// target byte doesn't match, this will return false.
+    /// Returns true if the buffer has `marker` at `n` bytes from the end.
     ///
     /// Used to check for packet type markers (STATE=0xEE, EVENT=0xED) before
-    /// linearizing, avoiding unnecessary work when the marker isn't present.
+    /// attempting to decode, avoiding unnecessary work.
     fn has_marker_from_end(&self, n: usize, marker: u8) -> bool {
         if self.len < n {
             return false;
@@ -129,23 +118,60 @@ impl Packetizer {
         self.buf[idx] == marker
     }
 
-    /// Copies the last `n` bytes from the circular buffer into `out`.
-    fn linearize(&self, out: &mut [u8], n: usize) {
+    /// Rotates the circular buffer in place so that the oldest byte is at
+    /// index 0 and the most recent `n` buffered bytes occupy `buf[0..n]`.
+    fn linearize(&mut self, n: usize) {
         let start = (self.write + STATE_PACKET_LEN - n) % STATE_PACKET_LEN;
-        for i in 0..n {
-            out[i] = self.buf[(start + i) % STATE_PACKET_LEN];
+        if start == 0 {
+            return;
         }
+        // Rotate the buffer so `start` becomes index 0.
+        self.buf.rotate_left(start);
+        self.write = self.len % STATE_PACKET_LEN;
     }
 
-    /// Feeds a slice of bytes, processing until a packet or invalid terminator
+    /// Returns the current buffer contents as a slice.
+    ///
+    /// This rotates the internal circular buffer so the data is contiguous,
+    /// then returns a slice of the buffered bytes. The returned slice is valid
+    /// until the next call to [`feed()`](Packetizer::feed),
+    /// [`feed_bytes()`](Packetizer::feed_bytes), or
+    /// [`reset()`](Packetizer::reset).
+    ///
+    /// Useful for inspecting the buffer after [`FeedResult::BadChecksum`] or
+    /// [`FeedResult::NoMarker`].
+    pub fn buffer(&mut self) -> &[u8] {
+        self.linearize(self.len);
+        &self.buf[..self.len]
+    }
+
+    /// Returns the number of bytes currently in the buffer.
+    pub fn buffered_len(&self) -> usize {
+        self.len
+    }
+
+    /// Feeds a slice of bytes, returning when a valid packet or bad checksum
     /// is found, or all bytes are consumed.
     ///
     /// Returns `(result, remaining)` where `remaining` is the unconsumed tail
-    /// of the input. The result is [`FeedResult::Pending`] only when all bytes
-    /// are consumed without reaching a packet boundary.
+    /// of the input:
     ///
-    /// Call repeatedly with the returned remaining slice to extract multiple
-    /// packets:
+    /// - [`FeedResult::Packet`] — a valid packet was decoded; `remaining`
+    ///   contains the bytes after it. Call again to extract more packets.
+    /// - [`FeedResult::BadChecksum`] — a terminator with a matching type marker
+    ///   but bad checksum was found; `remaining` contains the bytes after it.
+    ///   This signals corruption and the caller should inspect or reset.
+    /// - [`FeedResult::NoMarker`] — all bytes were consumed without finding a
+    ///   valid packet, but at least one `0xFF` terminator was seen without a
+    ///   corresponding type marker. This distinguishes "waiting for more data"
+    ///   from "receiving spurious terminators."
+    /// - [`FeedResult::Pending`] — all bytes consumed, no terminator seen.
+    ///
+    /// `NoMarker` results are accumulated (not returned immediately) because
+    /// they commonly occur with false terminators (e.g. a `0xFF` checksum byte
+    /// just before the real `0xFF` terminator). `BadChecksum` returns
+    /// immediately because it signals real corruption.
+    ///
     /// ```ignore
     /// let mut data = &serial_data[..];
     /// loop {
@@ -153,19 +179,26 @@ impl Packetizer {
     ///     data = rest;
     ///     match result {
     ///         FeedResult::Packet(packet) => handle(packet),
-    ///         FeedResult::Invalid(inv) => log_corruption(inv.as_bytes()),
-    ///         FeedResult::Pending => break,
+    ///         FeedResult::BadChecksum => log_corruption(packetizer.buffer()),
+    ///         FeedResult::NoMarker | FeedResult::Pending => break,
     ///     }
     /// }
     /// ```
     pub fn feed_bytes<'a>(&mut self, bytes: &'a [u8]) -> (FeedResult, &'a [u8]) {
+        let mut saw_no_marker = false;
         for (i, &b) in bytes.iter().enumerate() {
             match self.feed(b) {
                 FeedResult::Pending => {}
-                result => return (result, &bytes[i + 1..]),
+                FeedResult::Packet(pkt) => return (FeedResult::Packet(pkt), &bytes[i + 1..]),
+                FeedResult::BadChecksum => return (FeedResult::BadChecksum, &bytes[i + 1..]),
+                FeedResult::NoMarker => saw_no_marker = true,
             }
         }
-        (FeedResult::Pending, &[])
+        if saw_no_marker {
+            (FeedResult::NoMarker, &[])
+        } else {
+            (FeedResult::Pending, &[])
+        }
     }
 
     /// Resets the packetizer, discarding any buffered data.
@@ -263,21 +296,24 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_checksum_returns_invalid() {
+    fn corrupt_checksum_returns_bad_checksum() {
         let data = [0u8; 13];
         let mut packet = wrap_state_packet(&data);
         packet[14] ^= 0x01; // corrupt checksum
 
         let mut p = Packetizer::new();
-        let mut saw_invalid = false;
+        let mut saw_bad_checksum = false;
         for &b in &packet {
             match p.feed(b) {
-                FeedResult::Invalid(_) => saw_invalid = true,
+                FeedResult::BadChecksum => saw_bad_checksum = true,
                 FeedResult::Packet(_) => panic!("corrupt packet should not decode"),
-                FeedResult::Pending => {}
+                FeedResult::Pending | FeedResult::NoMarker => {}
             }
         }
-        assert!(saw_invalid, "should report Invalid for corrupt packet");
+        assert!(
+            saw_bad_checksum,
+            "should report BadChecksum for corrupt packet"
+        );
 
         // Packetizer recovers and decodes the next valid packet
         let good_packet = wrap_state_packet(&data);
@@ -291,30 +327,79 @@ mod tests {
     }
 
     #[test]
-    fn false_terminator_0xff_checksum() {
+    fn corrupt_checksum_via_feed_bytes() {
+        let data = [0u8; 13];
+        let mut packet = wrap_state_packet(&data);
+        packet[14] ^= 0x01; // corrupt checksum
+
+        let mut p = Packetizer::new();
+        let (result, rest) = p.feed_bytes(&packet);
+        assert_eq!(result, FeedResult::BadChecksum);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn bad_checksum_buffer_inspection() {
+        let data = [0u8; 13];
+        let mut packet = wrap_state_packet(&data);
+        packet[14] ^= 0x01; // corrupt checksum
+
+        let mut p = Packetizer::new();
+        let (result, _) = p.feed_bytes(&packet);
+        assert_eq!(result, FeedResult::BadChecksum);
+
+        let buf = p.buffer();
+        assert_eq!(buf.len(), STATE_PACKET_LEN);
+        assert_eq!(buf[0], 0xEE); // type byte
+        assert_eq!(buf[15], 0xFF); // terminator
+    }
+
+    #[test]
+    fn false_terminator_0xff_checksum_feed() {
         // Construct a state packet whose checksum is 0xFF.
-        // Packet format: [TYPE, DATA[13], CHECKSUM, TERMINATOR]
-        // We need checksum(TYPE || DATA) == 0xFF.
         // checksum([0xEE, d0..d12]) = 0xEE + sum(d0..d12) (wrapping)
         // We need 0xEE + sum(data) == 0xFF, so sum(data) == 0x11
         let mut data = [0u8; 13];
-        data[0] = 0x11; // sum of data = 0x11
+        data[0] = 0x11;
         let packet = wrap_state_packet(&data);
         assert_eq!(packet[14], 0xFF, "checksum should be 0xFF");
 
         // The packet has two consecutive 0xFF bytes: checksum and terminator.
-        // The packetizer should handle the false terminator (checksum) and
-        // still decode the packet when the real terminator arrives.
+        // feed() returns NoMarker at the false terminator (the checksum byte),
+        // then Packet at the real one.
         let mut p = Packetizer::new();
         let mut decoded = None;
+        let mut saw_no_marker = false;
         for &b in &packet {
             match p.feed(b) {
                 FeedResult::Packet(pkt) => decoded = Some(pkt),
-                FeedResult::Invalid(_) | FeedResult::Pending => {}
+                FeedResult::NoMarker => saw_no_marker = true,
+                FeedResult::BadChecksum | FeedResult::Pending => {}
             }
         }
+        assert!(saw_no_marker, "should see NoMarker at false terminator");
         let pkt = decoded.expect("should decode packet with 0xFF checksum");
         assert_eq!(pkt.data, PacketData::State(data));
+    }
+
+    #[test]
+    fn false_terminator_0xff_checksum_feed_bytes() {
+        // Same 0xFF-checksum packet, but via feed_bytes(). The NoMarker at
+        // the false terminator is suppressed; only Packet is returned.
+        let mut data = [0u8; 13];
+        data[0] = 0x11;
+        let packet = wrap_state_packet(&data);
+        assert_eq!(packet[14], 0xFF, "checksum should be 0xFF");
+
+        let mut p = Packetizer::new();
+        let (result, rest) = p.feed_bytes(&packet);
+        assert_eq!(
+            result,
+            FeedResult::Packet(Packet {
+                data: PacketData::State(data),
+            }),
+        );
+        assert!(rest.is_empty());
     }
 
     #[test]
@@ -340,11 +425,35 @@ mod tests {
     }
 
     #[test]
-    fn spurious_terminator_returns_pending() {
+    fn lone_terminator_returns_no_marker() {
         let mut p = Packetizer::new();
-        // A 0xFF without a packet type marker is likely data (e.g., event
-        // payloads contain 0xFF bytes). Return Pending to continue accumulating.
-        assert_eq!(p.feed(0xFF), FeedResult::Pending);
+        assert_eq!(p.feed(0xFF), FeedResult::NoMarker);
+    }
+
+    #[test]
+    fn lone_terminator_returns_no_marker_via_feed_bytes() {
+        let mut p = Packetizer::new();
+        let (result, rest) = p.feed_bytes(&[0xFF]);
+        assert_eq!(result, FeedResult::NoMarker);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn garbage_with_terminators_returns_no_marker_via_feed_bytes() {
+        let mut p = Packetizer::new();
+        let garbage = [0xAA, 0xBB, 0xFF, 0xCC, 0xDD, 0xFF];
+        let (result, rest) = p.feed_bytes(&garbage);
+        assert_eq!(result, FeedResult::NoMarker);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn garbage_without_terminators_returns_pending() {
+        let mut p = Packetizer::new();
+        let garbage = [0xAA, 0xBB, 0xCC, 0xDD];
+        let (result, rest) = p.feed_bytes(&garbage);
+        assert_eq!(result, FeedResult::Pending);
+        assert!(rest.is_empty());
     }
 
     #[test]
@@ -357,10 +466,12 @@ mod tests {
         for (i, &b) in packet.iter().enumerate() {
             let result = p.feed(b);
             if i < packet.len() - 1 {
-                // All bytes except the last should return Pending (no Invalid!)
-                assert_eq!(result, FeedResult::Pending, "byte {i} (0x{b:02x}) should be Pending");
+                // All bytes except the last should return Pending or NoMarker
+                assert!(
+                    matches!(result, FeedResult::Pending | FeedResult::NoMarker),
+                    "byte {i} (0x{b:02x}) should be Pending or NoMarker, got {result:?}"
+                );
             } else {
-                // Last byte should produce a valid packet
                 assert!(
                     matches!(result, FeedResult::Packet(_)),
                     "final byte should produce Packet, got {result:?}"
@@ -379,10 +490,11 @@ mod tests {
         for (i, &b) in packet.iter().enumerate() {
             let result = p.feed(b);
             if i < packet.len() - 1 {
-                // All bytes except the last should return Pending (no Invalid!)
-                assert_eq!(result, FeedResult::Pending, "byte {i} (0x{b:02x}) should be Pending");
+                assert!(
+                    matches!(result, FeedResult::Pending | FeedResult::NoMarker),
+                    "byte {i} (0x{b:02x}) should be Pending or NoMarker, got {result:?}"
+                );
             } else {
-                // Last byte should produce a valid packet
                 assert!(
                     matches!(result, FeedResult::Packet(_)),
                     "final byte should produce Packet, got {result:?}"
@@ -392,11 +504,36 @@ mod tests {
     }
 
     #[test]
+    fn buffer_returns_buffered_bytes() {
+        let mut p = Packetizer::new();
+        p.feed(0xAA);
+        p.feed(0xBB);
+        p.feed(0xCC);
+        assert_eq!(p.buffer(), &[0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn buffer_after_wrap() {
+        let mut p = Packetizer::new();
+        // Fill the ring buffer past its capacity to force wrapping
+        for i in 0..20u8 {
+            p.feed(i);
+        }
+        // Buffer should contain the last STATE_PACKET_LEN bytes
+        let buf = p.buffer();
+        assert_eq!(buf.len(), STATE_PACKET_LEN);
+        assert_eq!(buf[0], 4); // 20 - 16
+        assert_eq!(buf[15], 19);
+    }
+
+    #[test]
     fn reset_clears_buffer() {
         let mut p = Packetizer::new();
         p.feed(0xEE);
         p.feed(0x00);
         p.reset();
+        assert_eq!(p.buffered_len(), 0);
+        assert!(p.buffer().is_empty());
 
         // After reset, feeding a complete packet should work
         let data = [0x22, 0x00, 0x00];
@@ -407,6 +544,6 @@ mod tests {
                 decoded = Some(pkt);
             }
         }
-        assert_eq!(decoded.unwrap().data, PacketData::Event(data),);
+        assert_eq!(decoded.unwrap().data, PacketData::Event(data));
     }
 }

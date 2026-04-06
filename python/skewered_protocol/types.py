@@ -8,20 +8,39 @@ class DecodeError(ValueError):
     """Raised when a packet cannot be decoded."""
 
 
-class InvalidPacket:
-    """Sentinel returned by the Packetizer when a terminator was seen but did
-    not form a valid packet (corruption, or rarely a false terminator when the
-    checksum equals 0xFF)."""
+class BadChecksum:
+    """Sentinel returned by the Packetizer when a terminator was seen with a
+    matching packet type marker, but the checksum did not match. This indicates
+    corruption on the wire."""
 
-    _instance: InvalidPacket | None = None
+    _instance: BadChecksum | None = None
 
-    def __new__(cls) -> InvalidPacket:
+    def __new__(cls) -> BadChecksum:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
     def __repr__(self) -> str:
-        return "InvalidPacket"
+        return "BadChecksum"
+
+    def __bool__(self) -> bool:
+        return True
+
+
+class NoMarker:
+    """Sentinel returned by the Packetizer when a 0xFF terminator was seen but
+    no packet type marker (0xEE or 0xED) was found at the expected position.
+    This is typically a spurious 0xFF byte in the data stream."""
+
+    _instance: NoMarker | None = None
+
+    def __new__(cls) -> NoMarker:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "NoMarker"
 
     def __bool__(self) -> bool:
         return True
