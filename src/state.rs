@@ -35,6 +35,21 @@ pub struct State {
     pub right_cards: FencerCards,
 }
 
+impl State {
+    /// The side the box marks as having scored most recently, if any
+    /// (`Side::Both` for a double touch).
+    ///
+    /// The underlying `last_changed` score bits are *sticky*: they stay set on
+    /// every subsequent state until the next score (or a reset), so this tells
+    /// you *which* side scored last, not *when*. Treating a set marker as "a
+    /// touch just landed" makes every state look like a fresh scoring event;
+    /// feed states through a [`ScoreChangeDetector`] to recover the actual
+    /// score-change events from a stream.
+    pub fn last_scored_side(&self) -> Option<Side> {
+        marked_side(self.left_score, self.right_score)
+    }
+}
+
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -218,6 +233,76 @@ pub fn encode_state_data(state: &State) -> [u8; 13] {
         | (encode_card(state.right_cards.p_card) << 6);
 
     data
+}
+
+/// Detects new scoring events across a stream of decoded states.
+///
+/// A single [`State`] cannot say *when* the last score happened: the wire's
+/// `last_changed` markers are sticky, staying set on every state until the
+/// next score. A consumer that maps a set marker to "a touch just landed"
+/// fires its scored-recently behavior (sounds, score-blink animations, ...)
+/// on every state update instead of once per touch. This detector compares
+/// consecutive states and reports a side only for the state that first
+/// records a scoring event.
+///
+/// Create one detector per stream (per connection) and feed it every decoded
+/// state in arrival order:
+///
+/// ```
+/// use skewered_protocol::{ScoreChangeDetector, State};
+///
+/// let mut detector = ScoreChangeDetector::new();
+/// let mut state = State::default();
+/// assert_eq!(detector.update(&state), None);
+///
+/// state.left_score.score = 1;
+/// state.left_score.last_changed = true;
+/// assert_eq!(detector.update(&state), Some(skewered_protocol::Side::Left));
+/// // The marker is sticky, but the event is reported only once:
+/// assert_eq!(detector.update(&state), None);
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ScoreChangeDetector {
+    previous: Option<(FencerScore, FencerScore)>,
+}
+
+impl ScoreChangeDetector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed the next decoded state of the stream. Returns the marked side
+    /// when `state` records a new scoring event relative to the previous
+    /// state: the marker appeared or moved to a different side, or a score
+    /// changed while a side is marked (covering re-scores by the same side
+    /// and annulments).
+    ///
+    /// Returns `None` for the first state of a stream even when a marker is
+    /// already set — the marker only proves a score happened *some time*
+    /// before the stream started (e.g. a client connecting mid-bout). Read
+    /// [`State::last_scored_side`] when the sticky marker itself is wanted.
+    pub fn update(&mut self, state: &State) -> Option<Side> {
+        let previous = self.previous.replace((state.left_score, state.right_score));
+        let side = state.last_scored_side()?;
+        let (previous_left, previous_right) = previous?;
+        let same_side = marked_side(previous_left, previous_right) == Some(side);
+        let same_scores = previous_left.score == state.left_score.score
+            && previous_right.score == state.right_score.score;
+        if same_side && same_scores {
+            None
+        } else {
+            Some(side)
+        }
+    }
+}
+
+fn marked_side(left: FencerScore, right: FencerScore) -> Option<Side> {
+    match (left.last_changed, right.last_changed) {
+        (true, true) => Some(Side::Both),
+        (true, false) => Some(Side::Left),
+        (false, true) => Some(Side::Right),
+        (false, false) => None,
+    }
 }
 
 fn decode_latched_light(flags: u8, time: u16) -> Result<LatchedLight, DecodeError> {
@@ -499,6 +584,77 @@ mod tests {
         let decoded = decode_state_data(&encoded).unwrap();
         assert_eq!(decoded.clock.expired, true);
         assert_eq!(decoded.clock.on_break, true);
+    }
+
+    fn scores(left: u8, right: u8, marked: Option<Side>) -> State {
+        State {
+            left_score: FencerScore {
+                score: left,
+                last_changed: matches!(marked, Some(Side::Left) | Some(Side::Both)),
+            },
+            right_score: FencerScore {
+                score: right,
+                last_changed: matches!(marked, Some(Side::Right) | Some(Side::Both)),
+            },
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn score_change_detector_reports_each_event_once() {
+        use Side::*;
+        // A bout as a stream of (state, expected detector output):
+        let stream = [
+            (scores(0, 0, None), None, "fresh bout"),
+            (scores(1, 0, Some(Left)), Some(Left), "left scores"),
+            (scores(1, 0, Some(Left)), None, "sticky marker repeats"),
+            (scores(2, 0, Some(Left)), Some(Left), "left scores again"),
+            (scores(2, 1, Some(Right)), Some(Right), "marker moves right"),
+            (scores(3, 2, Some(Both)), Some(Both), "double touch"),
+            (scores(3, 2, Some(Both)), None, "sticky double repeats"),
+            (
+                scores(3, 1, Some(Both)),
+                Some(Both),
+                "annulment changes score",
+            ),
+            (scores(0, 0, None), None, "reset clears marker"),
+        ];
+        let mut detector = ScoreChangeDetector::new();
+        for (state, expected, what) in stream {
+            assert_eq!(detector.update(&state), expected, "{what}");
+        }
+    }
+
+    #[test]
+    fn score_change_detector_ignores_marker_on_first_state() {
+        // Connecting mid-bout: the marker proves a side scored some time
+        // before the stream started, not that a touch just landed.
+        let mut detector = ScoreChangeDetector::new();
+        let state = scores(3, 1, Some(Side::Left));
+        assert_eq!(detector.update(&state), None);
+        assert_eq!(state.last_scored_side(), Some(Side::Left));
+        // ...but a subsequent change is a real event.
+        assert_eq!(
+            detector.update(&scores(3, 2, Some(Side::Right))),
+            Some(Side::Right)
+        );
+    }
+
+    #[test]
+    fn last_scored_side_maps_marker_bits() {
+        assert_eq!(scores(0, 0, None).last_scored_side(), None);
+        assert_eq!(
+            scores(1, 0, Some(Side::Left)).last_scored_side(),
+            Some(Side::Left)
+        );
+        assert_eq!(
+            scores(0, 1, Some(Side::Right)).last_scored_side(),
+            Some(Side::Right)
+        );
+        assert_eq!(
+            scores(1, 1, Some(Side::Both)).last_scored_side(),
+            Some(Side::Both)
+        );
     }
 
     #[test]

@@ -171,6 +171,23 @@ State update packets consist of 13 data bytes:
   (note that both 'last changed' bits may be set,
    e.g. double score in epee)
   ```
+
+  The 'last changed' bits are **sticky**: they stay set on every subsequent
+  state packet until the next score (or a reset), identifying *which* side
+  scored most recently — not *when*. Don't treat a set bit as "a touch just
+  landed"; that fires once per state packet instead of once per touch. To
+  react to scoring events (sounds, score-blink animations, ...), compare
+  consecutive states and trigger only when the marker or a score actually
+  changes — the crate provides `ScoreChangeDetector` (and
+  `State::last_scored_side()` for the raw marker) to do this:
+
+  ```rust
+  let mut detector = skewered_protocol::ScoreChangeDetector::new();
+  // For each decoded state of a connection, in arrival order:
+  if let Some(side) = detector.update(&state) {
+      // `side` just scored (Left/Right/Both) — trigger per-touch behavior.
+  }
+  ```
 - **penalty card info** <br>
   This byte indicates the status of cards and p-cards for each fencer:
 

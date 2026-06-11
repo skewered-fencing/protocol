@@ -17,7 +17,7 @@ pub use envelope::{
 };
 pub use error::DecodeError;
 pub use event::{Event, EventPacket, decode_event_data, encode_event_data};
-pub use state::{State, decode_state_data, encode_state_data};
+pub use state::{ScoreChangeDetector, State, decode_state_data, encode_state_data};
 pub use types::*;
 
 #[cfg(feature = "serial")]

@@ -1,6 +1,6 @@
 [package]
 name = "skewered-protocol"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "Encoder/decoder for the Skewered Fencing scoring box serial/Bluetooth protocol"
 license = "MIT"
