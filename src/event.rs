@@ -10,6 +10,11 @@ pub enum Event {
     SleepNow,
     SetRemoteAddr(u8),
     RemoteBatteryLevel(u8),
+    /// Emulates the remote's MODE/SEL button: the receiver shows the current
+    /// weapon if it is idle, or advances to the next weapon if the weapon is
+    /// already being shown. The show-vs-advance decision is made by the
+    /// receiver (it is time-sensitive), so this event carries no argument.
+    NextWeapon,
 
     ClearScores,
     ScoreUp(Side),
@@ -63,6 +68,7 @@ pub fn decode_event_data(data: &[u8; 3]) -> Result<EventPacket, DecodeError> {
         0x04 => Event::SleepNow,
         0x05 => Event::SetRemoteAddr(data[1]),
         0x06 => Event::RemoteBatteryLevel(data[1]),
+        0x07 => Event::NextWeapon,
 
         0x10 => Event::ClearScores,
         0x11 => Event::ScoreUp(decode_side(data[1])?),
@@ -110,6 +116,7 @@ fn encode_event_id(event: &Event) -> u8 {
         Event::SleepNow => 0x04,
         Event::SetRemoteAddr(_) => 0x05,
         Event::RemoteBatteryLevel(_) => 0x06,
+        Event::NextWeapon => 0x07,
 
         Event::ClearScores => 0x10,
         Event::ScoreUp(_) => 0x11,
@@ -226,6 +233,7 @@ mod tests {
             Event::SleepNow,
             Event::SetRemoteAddr(42),
             Event::RemoteBatteryLevel(85),
+            Event::NextWeapon,
             Event::ClearScores,
             Event::ScoreUp(Side::Left),
             Event::ScoreUp(Side::Right),

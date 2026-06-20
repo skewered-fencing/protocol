@@ -312,6 +312,7 @@ class TestEvent:
             Event.sleep_now(),
             Event.set_remote_addr(42),
             Event.remote_battery_level(85),
+            Event.next_weapon(),
             Event.clear_scores(),
             Event.score_up(Side.LEFT),
             Event.score_up(Side.RIGHT),

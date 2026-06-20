@@ -254,6 +254,11 @@ notifications have been lost.
     <br> The next byte is the ID: 0 - 99
   - `0x06`: RemoteBatteryLevel(charge)
     <br>The next byte is the charge level percetage: 0 - 100
+  - `0x07`: NextWeapon
+    <br> Emulates the remote's MODE/SEL button: the receiver shows the current
+    weapon if it is idle, or advances to the next weapon if the weapon is
+    already being shown. The show-vs-advance decision is time-sensitive and is
+    made by the receiver, so this event carries no extra data.
 - **Bout operations**
   - `0x10`: ClearScores
   - `0x11`: ScoreUpByOne(side)

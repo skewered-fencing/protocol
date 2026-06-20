@@ -32,6 +32,7 @@ _EVENT_ID_TO_KIND: dict[int, str] = {
     0x04: "sleep_now",
     0x05: "set_remote_addr",
     0x06: "remote_battery_level",
+    0x07: "next_weapon",
     0x10: "clear_scores",
     0x11: "score_up",
     0x12: "score_down",
@@ -58,7 +59,7 @@ _SIDE_EVENTS = {"score_up", "score_down", "cycle_card", "cycle_p_card"}
 
 # Events with no extra data (extra byte = 0)
 _NO_DATA_EVENTS = {
-    "enter_menu", "sleep_now", "clear_scores", "cycle_priority",
+    "enter_menu", "sleep_now", "next_weapon", "clear_scores", "cycle_priority",
     "clock_reset", "clock_enter_time", "clock_start_stop", "clock_start_break",
     "review_timeline_back", "undo", "review_timeline_fwd", "func", "touche_occurred",
 }

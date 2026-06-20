@@ -220,6 +220,10 @@ class Event:
         return cls(kind="remote_battery_level", data=level)
 
     @classmethod
+    def next_weapon(cls) -> Event:
+        return cls(kind="next_weapon")
+
+    @classmethod
     def clear_scores(cls) -> Event:
         return cls(kind="clear_scores")
 
