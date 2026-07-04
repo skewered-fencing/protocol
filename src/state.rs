@@ -9,6 +9,10 @@ pub struct State {
     pub lockout_started: bool,
     pub live_video_view: bool,
     pub reviewing: bool,
+    /// Video-replay bout review is active: the box is dedicated to driving an
+    /// external video replay system and forwards its remote-control inputs as
+    /// menu-key events rather than acting on them.
+    pub bout_review: bool,
 
     // Match info (byte 1)
     pub weapon: Weapon,
@@ -57,6 +61,7 @@ impl Default for State {
             lockout_started: false,
             live_video_view: false,
             reviewing: false,
+            bout_review: false,
             weapon: Weapon::Sabre,
             priority: Priority::None,
             period: 1,
@@ -90,6 +95,7 @@ pub fn decode_state_data(data: &[u8; 13]) -> Result<State, DecodeError> {
     s.lockout_started = is_bit_set(data[0], 1);
     s.live_video_view = is_bit_set(data[0], 2);
     s.reviewing = is_bit_set(data[0], 3);
+    s.bout_review = is_bit_set(data[0], 4);
 
     // Byte 1: match info
     let priority_bits = data[1] >> 6;
@@ -168,7 +174,8 @@ pub fn encode_state_data(state: &State) -> [u8; 13] {
     data[0] = bit_if(state.sleeping, 0)
         | bit_if(state.lockout_started, 1)
         | bit_if(state.live_video_view, 2)
-        | bit_if(state.reviewing, 3);
+        | bit_if(state.reviewing, 3)
+        | bit_if(state.bout_review, 4);
 
     // Byte 1: match info
     let priority_bits = match state.priority {
@@ -372,6 +379,23 @@ mod tests {
                 0x00, // cards
             ]
         );
+        let decoded = decode_state_data(&encoded).unwrap();
+        assert_eq!(state, decoded);
+    }
+
+    #[test]
+    fn config_flags_roundtrip() {
+        let state = State {
+            period: 1,
+            sleeping: true,
+            lockout_started: true,
+            live_video_view: true,
+            reviewing: true,
+            bout_review: true,
+            ..State::default()
+        };
+        let encoded = encode_state_data(&state);
+        assert_eq!(encoded[0], 0b0001_1111);
         let decoded = decode_state_data(&encoded).unwrap();
         assert_eq!(state, decoded);
     }
