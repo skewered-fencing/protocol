@@ -15,6 +15,12 @@ pub enum Event {
     /// already being shown. The show-vs-advance decision is made by the
     /// receiver (it is time-sensitive), so this event carries no argument.
     NextWeapon,
+    /// Emulates a keypress of the physical IR remote. The receiver feeds the
+    /// key through its normal IR pipeline, so the press behaves exactly like
+    /// the paired remote's button — including mode-dependent routing (config
+    /// menu navigation, numeric time entry) and guards (operations blocked
+    /// while the clock runs).
+    RemoteKey(RemoteKey),
 
     ClearScores,
     ScoreUp(Side),
@@ -69,6 +75,9 @@ pub fn decode_event_data(data: &[u8; 3]) -> Result<EventPacket, DecodeError> {
         0x05 => Event::SetRemoteAddr(data[1]),
         0x06 => Event::RemoteBatteryLevel(data[1]),
         0x07 => Event::NextWeapon,
+        0x08 => {
+            Event::RemoteKey(RemoteKey::from_code(data[1]).ok_or(DecodeError::InvalidEventData)?)
+        }
 
         0x10 => Event::ClearScores,
         0x11 => Event::ScoreUp(decode_side(data[1])?),
@@ -117,6 +126,7 @@ fn encode_event_id(event: &Event) -> u8 {
         Event::SetRemoteAddr(_) => 0x05,
         Event::RemoteBatteryLevel(_) => 0x06,
         Event::NextWeapon => 0x07,
+        Event::RemoteKey(_) => 0x08,
 
         Event::ClearScores => 0x10,
         Event::ScoreUp(_) => 0x11,
@@ -159,6 +169,7 @@ fn encode_event_extra(event: &Event) -> u8 {
         },
         Event::SetRemoteAddr(id) => *id,
         Event::RemoteBatteryLevel(v) => *v,
+        Event::RemoteKey(key) => key.code(),
         Event::ScoreUp(side) => encode_side(side),
         Event::ScoreDown(side) => encode_side(side),
         Event::CycleCard(side) => encode_side(side),
@@ -260,6 +271,29 @@ mod tests {
             let data = encode_event_data(&event, 0);
             let decoded = decode_event_data(&data).unwrap();
             assert_eq!(decoded.event, event, "roundtrip failed for {:?}", event);
+        }
+    }
+
+    #[test]
+    fn remote_key_roundtrip() {
+        for key in RemoteKey::ALL {
+            let event = Event::RemoteKey(key);
+            let data = encode_event_data(&event, 0);
+            assert_eq!(data, [0x08, key.code(), 0]);
+            let decoded = decode_event_data(&data).unwrap();
+            assert_eq!(decoded.event, event, "roundtrip failed for {:?}", key);
+        }
+    }
+
+    #[test]
+    fn remote_key_rejects_non_button_codes() {
+        for code in [0u8, 1, 130, 255] {
+            let data = [0x08, code, 0x00];
+            assert_eq!(
+                decode_event_data(&data),
+                Err(DecodeError::InvalidEventData),
+                "code {code} should not decode"
+            );
         }
     }
 

@@ -140,6 +140,90 @@ pub enum MenuKey {
     Func,
 }
 
+/// A physical button on the IR handheld remote, identified by its NEC data
+/// code (the discriminant). Sent via [`crate::Event::RemoteKey`] so a
+/// controller can emulate an exact remote keypress: the receiver runs the
+/// press through its normal IR pipeline, inheriting all mode-dependent
+/// behavior (menu navigation, weapon show-then-advance, running-clock guards,
+/// numeric time entry) instead of a fixed semantic action.
+///
+/// Battery-level report frames (NEC codes 128–148) are deliberately not
+/// representable: they are telemetry from the physical remote, not buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RemoteKey {
+    LeftScoreUp = 68,
+    LeftCard = 7,
+    LeftPCard = 17,
+    LeftScoreDown = 22,
+    RightScoreUp = 67,
+    RightCard = 9,
+    RightPCard = 19,
+    RightScoreDown = 13,
+    Clear = 28,
+
+    TimeStartStop = 69,
+    TimeOneMinPause = 71,
+    TimeAdjUp = 90,
+    TimeAdjDown = 8,
+    TimeSet = 21,
+    TimeSetCustom = 31,
+    TimePeriodUp = 102,
+    TimePeriodDown = 103,
+
+    Priority = 72,
+    TimelineBack = 70,
+    Undo = 73,
+    NextWeapon = 25,
+    TimelineForward = 64,
+    Func = 74,
+
+    Configure = 100,
+    Sleep = 101,
+}
+
+impl RemoteKey {
+    /// Every remote button, for iteration and code lookup.
+    pub const ALL: [RemoteKey; 25] = [
+        RemoteKey::LeftScoreUp,
+        RemoteKey::LeftCard,
+        RemoteKey::LeftPCard,
+        RemoteKey::LeftScoreDown,
+        RemoteKey::RightScoreUp,
+        RemoteKey::RightCard,
+        RemoteKey::RightPCard,
+        RemoteKey::RightScoreDown,
+        RemoteKey::Clear,
+        RemoteKey::TimeStartStop,
+        RemoteKey::TimeOneMinPause,
+        RemoteKey::TimeAdjUp,
+        RemoteKey::TimeAdjDown,
+        RemoteKey::TimeSet,
+        RemoteKey::TimeSetCustom,
+        RemoteKey::TimePeriodUp,
+        RemoteKey::TimePeriodDown,
+        RemoteKey::Priority,
+        RemoteKey::TimelineBack,
+        RemoteKey::Undo,
+        RemoteKey::NextWeapon,
+        RemoteKey::TimelineForward,
+        RemoteKey::Func,
+        RemoteKey::Configure,
+        RemoteKey::Sleep,
+    ];
+
+    /// The NEC data code transmitted for this button.
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Looks up a button by its NEC data code. Returns `None` for codes that
+    /// are not remote buttons (including battery-level frames).
+    pub fn from_code(code: u8) -> Option<RemoteKey> {
+        RemoteKey::ALL.iter().copied().find(|k| k.code() == code)
+    }
+}
+
 /// A duration in milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Millis(pub u32);
