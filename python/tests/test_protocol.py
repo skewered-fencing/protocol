@@ -190,13 +190,13 @@ class TestState:
             clock=Clock(remaining_ms=180_000),
             hide_extra_hits=True,
             left_light=LatchedLight.late(250),
-            right_light=LatchedLight.whipover(50),
+            right_light=LatchedLight.short_hit(50),
         )
         encoded = encode_state_data(state)
         decoded = decode_state_data(encoded)
         assert decoded.hide_extra_hits is True
         assert decoded.left_light == LatchedLight.late(250)
-        assert decoded.right_light == LatchedLight.whipover(50)
+        assert decoded.right_light == LatchedLight.short_hit(50)
 
         state.hide_extra_hits = False
         encoded = encode_state_data(state)
@@ -247,8 +247,8 @@ class TestState:
             (LatchedLight.off(), LatchedLight.off()),
             (LatchedLight.valid(0), LatchedLight.valid(999)),
             (LatchedLight.nonvalid(500), LatchedLight.late(100)),
-            (LatchedLight.whipover(15), LatchedLight.nonvalid(0)),
-            (LatchedLight.late(713), LatchedLight.whipover(417)),
+            (LatchedLight.short_hit(15), LatchedLight.nonvalid(0)),
+            (LatchedLight.late(713), LatchedLight.short_hit(417)),
         ]
         for left, right in variants:
             state = State(

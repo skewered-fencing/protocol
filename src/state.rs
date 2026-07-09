@@ -318,7 +318,7 @@ fn decode_latched_light(flags: u8, time: u16) -> Result<LatchedLight, DecodeErro
         0 => Ok(LatchedLight::Off),
         1 => Ok(LatchedLight::Valid(ms)),
         2 => Ok(LatchedLight::NonValid(ms)),
-        3 => Ok(LatchedLight::Whipover(ms)),
+        3 => Ok(LatchedLight::ShortHit(ms)),
         4 => Ok(LatchedLight::Late(ms)),
         _ => Err(DecodeError::InvalidLatchedLight),
     }
@@ -329,7 +329,7 @@ fn encode_latched_light(light: &LatchedLight) -> (u8, u16) {
         LatchedLight::Off => (0, 0),
         LatchedLight::Valid(t) => (1, t.as_millis() as u16),
         LatchedLight::NonValid(t) => (2, t.as_millis() as u16),
-        LatchedLight::Whipover(t) => (3, t.as_millis() as u16),
+        LatchedLight::ShortHit(t) => (3, t.as_millis() as u16),
         LatchedLight::Late(t) => (4, t.as_millis() as u16),
     }
 }
@@ -553,14 +553,14 @@ mod tests {
             },
             hide_extra_hits: true,
             left_light: LatchedLight::Late(Millis(250)),
-            right_light: LatchedLight::Whipover(Millis(50)),
+            right_light: LatchedLight::ShortHit(Millis(50)),
             ..State::default()
         };
         let encoded = encode_state_data(&state);
         let decoded = decode_state_data(&encoded).unwrap();
         assert_eq!(decoded.hide_extra_hits, true);
         assert_eq!(decoded.left_light, LatchedLight::Late(Millis(250)));
-        assert_eq!(decoded.right_light, LatchedLight::Whipover(Millis(50)));
+        assert_eq!(decoded.right_light, LatchedLight::ShortHit(Millis(50)));
 
         state.hide_extra_hits = false;
         let encoded = encode_state_data(&state);
@@ -715,12 +715,12 @@ mod tests {
                 LatchedLight::Late(Millis(100)),
             ),
             (
-                LatchedLight::Whipover(Millis(15)),
+                LatchedLight::ShortHit(Millis(15)),
                 LatchedLight::NonValid(Millis(0)),
             ),
             (
                 LatchedLight::Late(Millis(713)),
-                LatchedLight::Whipover(Millis(417)),
+                LatchedLight::ShortHit(Millis(417)),
             ),
         ];
         for (left, right) in variants {

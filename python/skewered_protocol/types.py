@@ -120,12 +120,13 @@ class Clock:
 class LatchedLight:
     """Latched light state for one fencer.
 
-    kind: "off", "valid", "nonvalid", "whipover", "late"
+    kind: "off", "valid", "nonvalid", "short_hit", "late"
     timing_ms: milliseconds, meaning depends on kind:
       - off: always 0
       - valid: time since the hit occurred (capped at 999ms on wire)
       - nonvalid: time since the hit occurred (capped at 999ms on wire)
-      - whipover: duration of the short/whipover contact
+      - short_hit: duration of a hit too short to register (sabre whipover,
+        foil hit under 14ms, epee hit under 2ms)
       - late: time of the hit since lockout started
     """
     kind: str = "off"
@@ -144,8 +145,8 @@ class LatchedLight:
         return cls(kind="nonvalid", timing_ms=ms)
 
     @classmethod
-    def whipover(cls, ms: int) -> LatchedLight:
-        return cls(kind="whipover", timing_ms=ms)
+    def short_hit(cls, ms: int) -> LatchedLight:
+        return cls(kind="short_hit", timing_ms=ms)
 
     @classmethod
     def late(cls, ms: int) -> LatchedLight:

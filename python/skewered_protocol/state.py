@@ -43,7 +43,7 @@ def _decode_latched_light(flags: int, time: int) -> LatchedLight:
     elif flags == 2:
         return LatchedLight.nonvalid(time)
     elif flags == 3:
-        return LatchedLight.whipover(time)
+        return LatchedLight.short_hit(time)
     elif flags == 4:
         return LatchedLight.late(time)
     else:
@@ -59,7 +59,7 @@ def _encode_latched_light(light: LatchedLight) -> tuple[int, int]:
         return (1, t)
     elif kind == "nonvalid":
         return (2, t)
-    elif kind == "whipover":
+    elif kind == "short_hit":
         return (3, t)
     elif kind == "late":
         return (4, t)

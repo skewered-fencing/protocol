@@ -31,14 +31,16 @@ pub enum Card {
 /// The `Millis` value meaning depends on the variant:
 /// - `Valid` / `NonValid`: time since the hit occurred (capped at 999ms on
 ///   wire)
-/// - `Whipover`: duration of the short/whipover hit
+/// - `ShortHit`: duration of a hit too short to register: a sabre whipover
+///   (4-15ms hit during a parry), a foil hit under 14ms, or an épée hit
+///   under 2ms
 /// - `Late`: time of the hit since lockout started
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LatchedLight {
     Off,
     Valid(Millis),
     NonValid(Millis),
-    Whipover(Millis),
+    ShortHit(Millis),
     Late(Millis),
 }
 
