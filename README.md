@@ -294,9 +294,9 @@ notifications have been lost.
 ## Serial Port
 
 The serial protocol is full-duplex RS-485, operating at 115200 baud, 8 data
-bits, 1 stop bit, no parity bits.
+bits, 1 stop bit, no parity bits. Below is a reference hardware design for a peripheral.
 
-TODO: wiring diagram
+![Serial Connection Schematic](serial-hardware/serial-schematic.svg)
 
 The data emitted from the box is a continuous stream of packets that correspond
 to the data packets wrapped in an envelope consisting of 1 prefix byte and 2
