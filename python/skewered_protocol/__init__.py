@@ -4,7 +4,7 @@ from .types import (
     DecodeError, BadChecksum, NoMarker,
     Weapon, Side, Priority, Card, MenuKey,
     FencerCards, FencerScore, FencerStripInput, StripInput,
-    Clock, LatchedLight, State, Event, EventPacket,
+    Clock, LatchedLight, State, Event, EventPacket, POOL_PERIOD,
 )
 from .envelope import (
     checksum,

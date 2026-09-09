@@ -9,6 +9,7 @@ from skewered_protocol import (
     wrap_state_packet,
     STATE_PACKET_TYPE, EVENT_PACKET_TYPE, PACKET_TERMINATOR,
     STATE_DATA_LEN, EVENT_DATA_LEN, STATE_PACKET_LEN, EVENT_PACKET_LEN,
+    POOL_PERIOD,
 )
 
 
@@ -223,6 +224,22 @@ class TestState:
         decoded = decode_state_data(encoded)
         assert decoded.clock.expired is True
         assert decoded.clock.on_break is True
+
+    def test_pool_period_roundtrip(self):
+        state = State(weapon=Weapon.EPEE, period=POOL_PERIOD)
+        encoded = encode_state_data(state)
+        assert encoded[1] == 0x1F  # epee, period nibble all ones
+        assert decode_state_data(encoded) == state
+
+    def test_period_is_masked_to_its_nibble(self):
+        # An out-of-range period must not corrupt the weapon/priority bits.
+        state = State(weapon=Weapon.EPEE, priority=Priority.LEFT, period=0x7A)
+        encoded = encode_state_data(state)
+        assert encoded[1] == 0b01_01_1010
+        decoded = decode_state_data(encoded)
+        assert decoded.weapon == Weapon.EPEE
+        assert decoded.priority == Priority.LEFT
+        assert decoded.period == 0xA
 
     def test_invalid_period_zero(self):
         data = bytearray(13)

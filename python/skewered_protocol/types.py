@@ -153,6 +153,13 @@ class LatchedLight:
         return cls(kind="late", timing_ms=ms)
 
 
+# Period value marking a pool bout ("P" on the box): a single 3-minute period
+# with no break, no period counter, and non-combativity (passivity) disabled.
+# Consumers should render it as "P"; it is the top of the 4-bit period field so
+# ordinary period numbers (1-9) never collide with it.
+POOL_PERIOD = 15
+
+
 @dataclass(slots=True)
 class State:
     # Config flags (byte 0)
@@ -164,6 +171,7 @@ class State:
     # Match info (byte 1)
     weapon: Weapon = Weapon.SABRE
     priority: Priority = Priority.NONE
+    # 1-based period number (1-9), or POOL_PERIOD for a pool bout.
     period: int = 1
 
     # Clock info (bytes 2-4)

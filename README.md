@@ -70,7 +70,7 @@ State update packets consist of 13 data bytes:
   ```
   priority: 2 bits (00 = none, 01 = left, 10 = right, 11 = reserved)
   weapon: 2 bits (00 = sabre, 01 = epee, 10 = foil, 11 = reserved)
-  period: 4 bits (1-9) (*NOTE: should never be 0, minimum is 1)
+  period: 4 bits (1-9, or 15 = pool bout "P") (*NOTE: should never be 0, minimum is 1)
 
   E.g.  | PP WW pppp |
   ```

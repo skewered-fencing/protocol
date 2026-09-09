@@ -1,6 +1,15 @@
 use crate::error::DecodeError;
 use crate::types::*;
 
+/// Period value marking a pool bout ("P" on the box): a single 3-minute
+/// period with no break, no period counter, and non-combativity (passivity)
+/// disabled, per FIE t.124 which applies non-combativity only to direct
+/// elimination and team matches. Consumers should render it as "P"; older
+/// consumers that predate it render the raw nibble as "15", which is
+/// harmless. The value is the top of the 4-bit period field so ordinary
+/// period numbers (1-9) never collide with it.
+pub const POOL_PERIOD: u8 = 15;
+
 /// Full decoded state from a 13-byte state data packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct State {
@@ -17,6 +26,8 @@ pub struct State {
     // Match info (byte 1)
     pub weapon: Weapon,
     pub priority: Priority,
+    /// 1-based period number (1-9), or [`POOL_PERIOD`] for a pool bout that
+    /// has no numbered periods. Never 0 on the wire.
     pub period: u8,
 
     // Clock info (bytes 2-4)
@@ -188,7 +199,9 @@ pub fn encode_state_data(state: &State) -> [u8; 13] {
         Weapon::Epee => 0b01,
         Weapon::Foil => 0b10,
     };
-    data[1] = (priority_bits << 6) | (weapon_bits << 4) | state.period;
+    // The period is masked to its 4-bit field: an out-of-range value must
+    // never bleed into the weapon and priority bits and corrupt the packet.
+    data[1] = (priority_bits << 6) | (weapon_bits << 4) | (state.period & 0x0F);
 
     // Bytes 2-4: clock info
     let ms = state.clock.remaining.as_millis();
@@ -679,6 +692,35 @@ mod tests {
             scores(1, 1, Some(Side::Both)).last_scored_side(),
             Some(Side::Both)
         );
+    }
+
+    #[test]
+    fn pool_period_roundtrip() {
+        let state = State {
+            weapon: Weapon::Epee,
+            period: POOL_PERIOD,
+            ..State::default()
+        };
+        let encoded = encode_state_data(&state);
+        assert_eq!(encoded[1], 0x1F, "epee, period nibble all ones");
+        assert_eq!(decode_state_data(&encoded).unwrap(), state);
+    }
+
+    #[test]
+    fn period_is_masked_to_its_nibble() {
+        // An out-of-range period must not corrupt the weapon/priority bits.
+        let state = State {
+            weapon: Weapon::Epee,
+            priority: Priority::Left,
+            period: 0x7A,
+            ..State::default()
+        };
+        let encoded = encode_state_data(&state);
+        assert_eq!(encoded[1], 0b01_01_1010);
+        let decoded = decode_state_data(&encoded).unwrap();
+        assert_eq!(decoded.weapon, Weapon::Epee);
+        assert_eq!(decoded.priority, Priority::Left);
+        assert_eq!(decoded.period, 0xA);
     }
 
     #[test]

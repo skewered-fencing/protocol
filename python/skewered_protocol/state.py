@@ -211,7 +211,9 @@ def encode_state_data(state: State) -> bytes:
         Weapon.EPEE: 0b01,
         Weapon.FOIL: 0b10,
     }[state.weapon]
-    data[1] = (priority_bits << 6) | (weapon_bits << 4) | state.period
+    # The period is masked to its 4-bit field: an out-of-range value must
+    # never bleed into the weapon and priority bits and corrupt the packet.
+    data[1] = (priority_bits << 6) | (weapon_bits << 4) | (state.period & 0x0F)
 
     # Bytes 2-4: clock info
     ms = state.clock.remaining_ms
