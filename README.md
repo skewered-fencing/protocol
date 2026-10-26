@@ -259,6 +259,11 @@ notifications have been lost.
     weapon if it is idle, or advances to the next weapon if the weapon is
     already being shown. The show-vs-advance decision is time-sensitive and is
     made by the receiver, so this event carries no extra data.
+  - `0x09`: UpdateMode
+    <br> The sender is in its firmware-update mode, and its receivers may
+    enter theirs: a scoring box sends this to its repeaters while it waits for
+    an update. The next byte is always `0xD5`; a packet with any other value
+    is invalid. Receivers should act only on several of these in a row.
 - **Bout operations**
   - `0x10`: ClearScores
   - `0x11`: ScoreUpByOne(side)

@@ -21,6 +21,15 @@ pub enum Event {
     /// menu navigation, numeric time entry) and guards (operations blocked
     /// while the clock runs).
     RemoteKey(RemoteKey),
+    /// The sender is in its firmware-update mode and consents to its
+    /// receivers entering theirs: a scoring box sends it to its repeaters
+    /// while it waits for an update, so the companion app can update the
+    /// repeaters without anyone reaching their menus. The data byte is the
+    /// fixed [`UPDATE_MODE_MAGIC`], which a receiver must check, so a
+    /// corrupted packet is unlikely to decode as this event. Receivers should
+    /// still act only on several of these in a row, since acting on one costs
+    /// a display.
+    UpdateMode,
 
     ClearScores,
     ScoreUp(Side),
@@ -42,6 +51,9 @@ pub enum Event {
     Func,
     ToucheOccurred,
 }
+
+/// The data byte of [`Event::UpdateMode`]. Any other value fails to decode.
+pub const UPDATE_MODE_MAGIC: u8 = 0xD5;
 
 /// A decoded event packet: the event plus the dropped count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +90,8 @@ pub fn decode_event_data(data: &[u8; 3]) -> Result<EventPacket, DecodeError> {
         0x08 => {
             Event::RemoteKey(RemoteKey::from_code(data[1]).ok_or(DecodeError::InvalidEventData)?)
         }
+        0x09 if data[1] == UPDATE_MODE_MAGIC => Event::UpdateMode,
+        0x09 => return Err(DecodeError::InvalidEventData),
 
         0x10 => Event::ClearScores,
         0x11 => Event::ScoreUp(decode_side(data[1])?),
@@ -127,6 +141,7 @@ fn encode_event_id(event: &Event) -> u8 {
         Event::RemoteBatteryLevel(_) => 0x06,
         Event::NextWeapon => 0x07,
         Event::RemoteKey(_) => 0x08,
+        Event::UpdateMode => 0x09,
 
         Event::ClearScores => 0x10,
         Event::ScoreUp(_) => 0x11,
@@ -170,6 +185,7 @@ fn encode_event_extra(event: &Event) -> u8 {
         Event::SetRemoteAddr(id) => *id,
         Event::RemoteBatteryLevel(v) => *v,
         Event::RemoteKey(key) => key.code(),
+        Event::UpdateMode => UPDATE_MODE_MAGIC,
         Event::ScoreUp(side) => encode_side(side),
         Event::ScoreDown(side) => encode_side(side),
         Event::CycleCard(side) => encode_side(side),
@@ -245,6 +261,7 @@ mod tests {
             Event::SetRemoteAddr(42),
             Event::RemoteBatteryLevel(85),
             Event::NextWeapon,
+            Event::UpdateMode,
             Event::ClearScores,
             Event::ScoreUp(Side::Left),
             Event::ScoreUp(Side::Right),
@@ -282,6 +299,19 @@ mod tests {
             assert_eq!(data, [0x08, key.code(), 0]);
             let decoded = decode_event_data(&data).unwrap();
             assert_eq!(decoded.event, event, "roundtrip failed for {:?}", key);
+        }
+    }
+
+    #[test]
+    fn update_mode_requires_magic() {
+        let data = encode_event_data(&Event::UpdateMode, 0);
+        assert_eq!(data, [0x09, UPDATE_MODE_MAGIC, 0]);
+        for wrong in [0x00, 0xD4, 0xFF] {
+            assert_eq!(
+                decode_event_data(&[0x09, wrong, 0]),
+                Err(DecodeError::InvalidEventData),
+                "magic {wrong:#04x} should not decode"
+            );
         }
     }
 

@@ -16,7 +16,7 @@ pub use envelope::{
     wrap_event_packet, wrap_state_packet,
 };
 pub use error::DecodeError;
-pub use event::{Event, EventPacket, decode_event_data, encode_event_data};
+pub use event::{Event, EventPacket, UPDATE_MODE_MAGIC, decode_event_data, encode_event_data};
 pub use state::{POOL_PERIOD, ScoreChangeDetector, State, decode_state_data, encode_state_data};
 pub use types::*;
 
