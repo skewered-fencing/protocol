@@ -24,11 +24,12 @@ pub enum Event {
     /// The sender is in its firmware-update mode and consents to its
     /// receivers entering theirs: a scoring box sends it to its repeaters
     /// while it waits for an update, so the companion app can update the
-    /// repeaters without anyone reaching their menus. The data byte is the
-    /// fixed [`UPDATE_MODE_MAGIC`], which a receiver must check, so a
-    /// corrupted packet is unlikely to decode as this event. Receivers should
-    /// still act only on several of these in a row, since acting on one costs
-    /// a display.
+    /// repeaters without anyone reaching their menus. Both of its data bytes
+    /// are fixed: [`UPDATE_MODE_MAGIC`], then its complement in place of the
+    /// dropped count (always reported as 0), and decoding checks both, so a
+    /// corrupted packet is very unlikely to decode as this event. Receivers
+    /// should still act only on several of these in a row, since acting on
+    /// one costs a display.
     UpdateMode,
 
     ClearScores,
@@ -52,7 +53,8 @@ pub enum Event {
     ToucheOccurred,
 }
 
-/// The data byte of [`Event::UpdateMode`]. Any other value fails to decode.
+/// The extra-data byte of [`Event::UpdateMode`]; its third byte is the
+/// complement, `!UPDATE_MODE_MAGIC`. Any other values fail to decode.
 pub const UPDATE_MODE_MAGIC: u8 = 0xD5;
 
 /// A decoded event packet: the event plus the dropped count.
@@ -90,7 +92,13 @@ pub fn decode_event_data(data: &[u8; 3]) -> Result<EventPacket, DecodeError> {
         0x08 => {
             Event::RemoteKey(RemoteKey::from_code(data[1]).ok_or(DecodeError::InvalidEventData)?)
         }
-        0x09 if data[1] == UPDATE_MODE_MAGIC => Event::UpdateMode,
+        0x09 if data[1] == UPDATE_MODE_MAGIC && data[2] == !UPDATE_MODE_MAGIC => {
+            // The third byte is the magic's complement, not a dropped count.
+            return Ok(EventPacket {
+                event: Event::UpdateMode,
+                dropped_count: 0,
+            });
+        }
         0x09 => return Err(DecodeError::InvalidEventData),
 
         0x10 => Event::ClearScores,
@@ -127,7 +135,10 @@ pub fn encode_event_data(event: &Event, dropped_count: u8) -> [u8; 3] {
     let mut data = [0u8; 3];
     data[0] = encode_event_id(event);
     data[1] = encode_event_extra(event);
-    data[2] = dropped_count;
+    data[2] = match event {
+        Event::UpdateMode => !UPDATE_MODE_MAGIC,
+        _ => dropped_count,
+    };
     data
 }
 
@@ -304,13 +315,19 @@ mod tests {
 
     #[test]
     fn update_mode_requires_magic() {
-        let data = encode_event_data(&Event::UpdateMode, 0);
-        assert_eq!(data, [0x09, UPDATE_MODE_MAGIC, 0]);
-        for wrong in [0x00, 0xD4, 0xFF] {
+        // The dropped count can't be sent: its byte is the second magic.
+        let data = encode_event_data(&Event::UpdateMode, 7);
+        assert_eq!(data, [0x09, 0xD5, 0x2A]);
+        let decoded = decode_event_data(&data).unwrap();
+        assert_eq!(
+            (decoded.event, decoded.dropped_count),
+            (Event::UpdateMode, 0)
+        );
+        for wrong in [[0x09, 0xD4, 0x2A], [0x09, 0xD5, 0x00], [0x09, 0x00, 0x00]] {
             assert_eq!(
-                decode_event_data(&[0x09, wrong, 0]),
+                decode_event_data(&wrong),
                 Err(DecodeError::InvalidEventData),
-                "magic {wrong:#04x} should not decode"
+                "{wrong:02x?} should not decode"
             );
         }
     }

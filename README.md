@@ -262,8 +262,10 @@ notifications have been lost.
   - `0x09`: UpdateMode
     <br> The sender is in its firmware-update mode, and its receivers may
     enter theirs: a scoring box sends this to its repeaters while it waits for
-    an update. The next byte is always `0xD5`; a packet with any other value
-    is invalid. Receivers should act only on several of these in a row.
+    an update. The next byte is always `0xD5` and the one after it (the
+    dropped count in other events) always `0x2A`; a packet with any other
+    values is invalid. Receivers should act only on several of these in a
+    row.
 - **Bout operations**
   - `0x10`: ClearScores
   - `0x11`: ScoreUpByOne(side)
